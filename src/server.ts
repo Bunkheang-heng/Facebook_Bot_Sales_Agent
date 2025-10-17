@@ -3,10 +3,12 @@ dotenv.config();
 
 import express, { type Request, type Response } from 'express';
 import crypto from 'crypto';
-import { sendTextMessage } from './social/facebook';
+import { sendSenderAction, sendTextMessage } from './social/facebook';
 import { handleConversation } from './conversation';
 import helmet from 'helmet';
 import compression from 'compression';
+import { env } from './config';
+import { logger } from './logger';
 
 const app = express();
 
@@ -22,10 +24,10 @@ app.use(express.json({
   }
 }));
 
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const APP_SECRET = process.env.APP_SECRET;
-const PORT = Number(process.env.PORT || 3000);
+const PAGE_ACCESS_TOKEN = env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = env.VERIFY_TOKEN;
+const APP_SECRET = env.APP_SECRET;
+const PORT = env.PORT;
 const MAX_MESSAGE_CHARS = 800;
 const RATE_LIMIT_WINDOW_MS = 30_000; // 30s
 const RATE_LIMIT_MAX_EVENTS = 4; // per window per user
@@ -109,7 +111,10 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
           continue;
         }
         const clipped = messageText.trim().slice(0, MAX_MESSAGE_CHARS);
-        handleConversation(senderId, clipped)
+        sendSenderAction(PAGE_ACCESS_TOKEN!, senderId, 'typing_on')
+          .catch(() => {})
+          .finally(() => {})
+        handleConversation(senderId, clipped, mid ? { mid } : undefined)
           .then((reply) => {
             return sendTextMessage(PAGE_ACCESS_TOKEN!, senderId, reply);
           })
@@ -127,8 +132,16 @@ app.get('/', (_req, res) => {
   res.status(200).send('Messenger bot is running');
 });
 
+app.get('/healthz', async (_req, res) => {
+  try {
+    res.status(200).json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+  logger.info({ port: PORT }, `Server listening on http://localhost:${PORT}`);
 });
 
 

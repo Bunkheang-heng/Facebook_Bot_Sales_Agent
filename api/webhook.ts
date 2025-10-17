@@ -1,6 +1,8 @@
 import crypto from 'crypto';
+import { env } from '../src/config';
+import { logger } from '../src/logger';
 import { handleConversation } from '../src/conversation';
-import { sendTextMessage } from '../src/social/facebook';
+import { sendSenderAction, sendTextMessage } from '../src/social/facebook';
 
 type RateBucket = { count: number; resetAt: number };
 const userRateBuckets: Map<string, RateBucket> = new Map();
@@ -42,11 +44,12 @@ function verifySignature(rawBody: Buffer, signatureHeader: string | undefined, a
 }
 
 export default async function handler(req: any, res: any) {
-  const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-  const APP_SECRET = process.env.APP_SECRET;
+  const PAGE_ACCESS_TOKEN = env.PAGE_ACCESS_TOKEN;
+  const VERIFY_TOKEN = env.VERIFY_TOKEN;
+  const APP_SECRET = env.APP_SECRET;
 
   if (!PAGE_ACCESS_TOKEN || !VERIFY_TOKEN || !APP_SECRET) {
+    logger.error('Server misconfigured');
     res.statusCode = 500;
     res.end('Server misconfigured');
     return;
@@ -107,7 +110,8 @@ export default async function handler(req: any, res: any) {
           const clipped = messageText.trim().slice(0, MAX_MESSAGE_CHARS);
           tasks.push((async () => {
             try {
-              const reply = await handleConversation(senderId, clipped);
+              await sendSenderAction(PAGE_ACCESS_TOKEN, senderId, 'typing_on');
+              const reply = await handleConversation(senderId, clipped, mid ? { mid } : undefined);
               await sendTextMessage(PAGE_ACCESS_TOKEN, senderId, reply);
             } catch (err: any) {
               console.error('Failed to handle message event', err?.response?.data ?? err);
@@ -117,7 +121,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    await Promise.allSettled(tasks);
+    void Promise.allSettled(tasks);
     res.statusCode = 200;
     res.end('OK');
     return;

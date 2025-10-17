@@ -1,18 +1,7 @@
 import OpenAI from 'openai';
-import { db } from './firebase';
 import { systemPrompt } from './prompts';
-
-type ConversationStage = 'ask_item' | 'ask_name' | 'ask_phone' | 'ask_address' | 'completed';
-
-type LeadDoc = {
-  userId: string;
-  item?: string;
-  name?: string;
-  phone?: string;
-  address?: string;
-  stage: ConversationStage;
-  updatedAt: number;
-};
+import { getRecentMessages, getSummary, setSummary } from './services/history';
+import type { LeadDoc } from './services/leads';
 
 let openaiClient: OpenAI | null = null;
 
@@ -22,7 +11,7 @@ function getOpenAI(): OpenAI {
     if (!apiKey) {
       throw new Error('Missing required env var: OPENAI_API_KEY');
     }
-    openaiClient = new OpenAI({ apiKey, timeout: 10000, maxRetries: 2 });
+    openaiClient = new OpenAI({ apiKey, timeout: 8000, maxRetries: 2 });
   }
   return openaiClient;
 }
@@ -54,60 +43,78 @@ export async function generateAiReply(userMessageText: string): Promise<string> 
   return clampInput(response, 800);
 }
 
-export async function handleConversation(userId: string, userMessageText: string): Promise<string> {
-  const leads = db.collection('leads');
-  const ref = leads.doc(userId);
-  const snap = await ref.get();
-  let lead: LeadDoc;
-  if (!snap.exists) {
-    lead = {
-      userId,
-      stage: 'ask_item',
-      updatedAt: Date.now()
-    };
-    await ref.set(lead);
-  } else {
-    lead = snap.data() as LeadDoc;
-    if (!lead.stage) lead.stage = 'ask_item';
-  }
+// History-aware generation with lead-context injection
+export async function generateAiReplyWithHistory(
+  userId: string,
+  userMessageText: string,
+  lead?: LeadDoc
+): Promise<string> {
+  const recent = await getRecentMessages(userId, 8);
+  const summary = await getSummary(userId);
 
-  const msg = userMessageText.trim();
+  const leadFacts = lead
+    ? [
+        lead.name ? `Name: ${lead.name}` : null,
+        lead.phone ? `Phone: ${lead.phone}` : null,
+        lead.address ? `Address: ${lead.address}` : null,
+        lead.item ? `Interested Item: ${lead.item}` : null
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : '';
 
-  if (lead.stage === 'ask_item') {
-    lead.item = msg;
-    lead.stage = 'ask_name';
-    lead.updatedAt = Date.now();
-    await ref.set(lead, { merge: true });
-    return 'Great! May I have your full name?';
-  }
+  const contextPreamble = [
+    systemPrompt,
+    leadFacts ? `Known customer details:\n${leadFacts}` : null,
+    summary ? `Conversation summary:\n${summary}` : null
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
-  if (lead.stage === 'ask_name') {
-    lead.name = msg;
-    lead.stage = 'ask_phone';
-    lead.updatedAt = Date.now();
-    await ref.set(lead, { merge: true });
-    return 'Thanks! What is the best phone number to reach you?';
-  }
+  const historyMessages = recent.map((m) => ({
+    role: m.role as 'user' | 'assistant',
+    content: clampInput(m.content)
+  }));
 
-  if (lead.stage === 'ask_phone') {
-    // Basic normalization; accept any input and store
-    lead.phone = msg;
-    lead.stage = 'ask_address';
-    lead.updatedAt = Date.now();
-    await ref.set(lead, { merge: true });
-    return 'Got it. Finally, could you provide your delivery address?';
-  }
+  const completion = await getOpenAI().chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.3,
+    max_tokens: 300,
+    messages: [
+      { role: 'system', content: contextPreamble },
+      ...historyMessages,
+      { role: 'user', content: clampInput(userMessageText) }
+    ]
+  });
 
-  if (lead.stage === 'ask_address') {
-    lead.address = msg;
-    lead.stage = 'completed';
-    lead.updatedAt = Date.now();
-    await ref.set(lead, { merge: true });
-    return 'Thank you! Your details have been saved. Our sales team will contact you shortly.';
-  }
-
-  // If conversation is completed, fall back to AI small talk or confirmation.
-  return 'We have your details on file. How else can I help today?';
+  const content = completion.choices?.[0]?.message?.content?.trim();
+  const response = content && content.length > 0 ? content : 'Sure—how can I help further?';
+  return clampInput(response, 800);
 }
 
+// Optional: summarize long threads to reduce tokens
+export async function refreshThreadSummary(userId: string): Promise<void> {
+  const recent = await getRecentMessages(userId, 50);
+  if (recent.length < 20) return; // summarize only when long enough
+  const text = recent
+    .map((t) => `${t.role.toUpperCase()}: ${t.content}`)
+    .join('\n')
+    .slice(0, 6000);
+
+  const completion = await getOpenAI().chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.2,
+    max_tokens: 250,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'Summarize the conversation into concise bullet points with key facts and requests. Omit small talk.'
+      },
+      { role: 'user', content: text }
+    ]
+  });
+  const summary = completion.choices?.[0]?.message?.content?.trim();
+  if (summary) await setSummary(userId, summary);
+}
 

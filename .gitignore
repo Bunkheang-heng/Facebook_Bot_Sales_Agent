@@ -5,4 +5,4 @@ dist/
 
 
 .vercel
-khmerdev-50f1a-firebase-adminsdk-pq1cp-91b0d68e2f.json
+*.firebase-adminsdk-*.json
