@@ -40,10 +40,13 @@ export type MessagingEvent = {
   senderId: string;
   messageText: string;
   mid: string | undefined;
+  imageUrl?: string;
+  hasImage: boolean;
 };
 
 /**
  * Parse and extract messaging events from Facebook webhook payload
+ * Handles both text and image messages
  * @param body Webhook request body
  * @returns Array of messaging events
  */
@@ -61,6 +64,7 @@ export function extractMessagingEvents(body: any): MessagingEvent[] {
       const senderId: string | undefined = event.sender?.id;
       const messageText: string | undefined = event.message?.text;
       const mid: string | undefined = event.message?.mid;
+      const attachments: any[] = event.message?.attachments ?? [];
 
       // Deduplicate by message ID
       if (mid && seenMids.has(mid)) {
@@ -71,12 +75,52 @@ export function extractMessagingEvents(body: any): MessagingEvent[] {
         seenMids.add(mid);
       }
 
-      // Validate required fields
-      if (senderId && typeof messageText === 'string' && messageText.trim().length > 0) {
-        events.push({ senderId, messageText, mid });
+      if (!senderId) {
+        continue;
+      }
+
+      // Extract image attachment if present
+      let imageUrl: string | undefined;
+      for (const attachment of attachments) {
+        if (attachment.type === 'image' && attachment.payload?.url) {
+          imageUrl = attachment.payload.url;
+          if (imageUrl) {
+            logger.info({ senderId, imageUrl: imageUrl.slice(0, 100) }, '📸 Image attachment detected');
+          }
+          break; // Use first image only
+        }
+      }
+
+      // Process if has text or image
+      const hasText = typeof messageText === 'string' && messageText.trim().length > 0;
+      const hasImage = !!imageUrl;
+
+      if (hasText || hasImage) {
+        const event: MessagingEvent = {
+          senderId,
+          messageText: messageText || '',
+          mid,
+          hasImage
+        };
+        
+        // Only add imageUrl if it exists
+        if (imageUrl) {
+          event.imageUrl = imageUrl;
+        }
+        
+        events.push(event);
       }
     }
   }
+
+  logger.info(
+    {
+      totalEvents: events.length,
+      withImages: events.filter(e => e.hasImage).length,
+      textOnly: events.filter(e => !e.hasImage).length
+    },
+    '📨 Messaging events extracted'
+  );
 
   return events;
 }

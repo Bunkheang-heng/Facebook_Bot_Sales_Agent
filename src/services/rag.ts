@@ -43,7 +43,7 @@ async function getAccessToken(): Promise<string> {
 }
 
 export async function embedTextWithVertex(text: string): Promise<number[]> {
-  logger.info({ text: text.slice(0, 100) }, '🧠 Vertex AI: Generating embedding');
+  logger.info({ text: text.slice(0, 100) }, '🧠 Vertex AI: Generating text embedding');
   const token = await getAccessToken();
   // Using multimodalembedding@001 to match existing 1408-dim embeddings in Supabase
   const url = `https://${env.GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1/projects/${env.GOOGLE_CLOUD_PROJECT_ID}/locations/${env.GOOGLE_CLOUD_LOCATION}/publishers/google/models/multimodalembedding@001:predict`;
@@ -60,7 +60,7 @@ export async function embedTextWithVertex(text: string): Promise<number[]> {
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
-    logger.error({ status: res.status, error: errText, url }, '❌ Vertex AI: Embedding failed');
+    logger.error({ status: res.status, error: errText, url }, '❌ Vertex AI: Text embedding failed');
     throw new Error(`Vertex embed error ${res.status}: ${errText}`);
   }
   const data = await res.json();
@@ -69,7 +69,50 @@ export async function embedTextWithVertex(text: string): Promise<number[]> {
     logger.error({ response: JSON.stringify(data).slice(0, 500) }, '❌ Vertex AI: Invalid embedding response');
     throw new Error('Invalid embedding response');
   }
-  logger.info({ dimension: values.length }, '✅ Vertex AI: Embedding generated');
+  logger.info({ dimension: values.length }, '✅ Vertex AI: Text embedding generated');
+  return values.map((v: any) => Number(v));
+}
+
+/**
+ * Generate embeddings from image using Vertex AI multimodal model
+ * @param imageBase64 Base64 encoded image data
+ * @returns 1408-dimensional embedding vector
+ */
+export async function embedImageWithVertex(imageBase64: string): Promise<number[]> {
+  logger.info({ imageSize: Math.round(imageBase64.length / 1024) + 'KB' }, '🖼️ Vertex AI: Generating image embedding');
+  const token = await getAccessToken();
+  
+  const url = `https://${env.GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1/projects/${env.GOOGLE_CLOUD_PROJECT_ID}/locations/${env.GOOGLE_CLOUD_LOCATION}/publishers/google/models/multimodalembedding@001:predict`;
+  
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      instances: [
+        {
+          image: {
+            bytesBase64Encoded: imageBase64
+          }
+        }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    logger.error({ status: res.status, error: errText }, '❌ Vertex AI: Image embedding failed');
+    throw new Error(`Vertex image embed error ${res.status}: ${errText}`);
+  }
+
+  const data = await res.json();
+  const values: number[] | undefined = data?.predictions?.[0]?.imageEmbedding;
+  
+  if (!values || !Array.isArray(values)) {
+    logger.error({ response: JSON.stringify(data).slice(0, 500) }, '❌ Vertex AI: Invalid image embedding response');
+    throw new Error('Invalid image embedding response');
+  }
+
+  logger.info({ dimension: values.length }, '✅ Vertex AI: Image embedding generated');
   return values.map((v: any) => Number(v));
 }
 
@@ -80,7 +123,7 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
 
   logger.info(
     { query: queryText, matchCount, matchThreshold, embeddingDim: queryEmbedding.length },
-    '🔎 Supabase: Querying hybrid + vector search'
+    '🔎 Supabase: Querying hybrid + vector search (text)'
   );
 
   const [{ data: hybrid, error: e1 }, { data: vec, error: e2 }] = await Promise.all([
@@ -129,6 +172,64 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
       topResults: rows.slice(0, 3).map((r) => ({ id: r.id, name: r.name, similarity: r.similarity }))
     },
     '✅ Supabase: Results merged and ranked'
+  );
+
+  return rows.map((r: any) => ({
+    id: String(r.id),
+    name: String(r.name ?? ''),
+    description: r.description ?? null,
+    price: r.price == null ? null : Number(r.price),
+    image_url: r.image_url ?? null,
+    similarity: Number(r.similarity ?? 0)
+  }));
+}
+
+/**
+ * Retrieve similar products using image-based vector search
+ * @param imageBase64 Base64 encoded image
+ * @param opts Optional match count and similarity threshold
+ * @returns Array of similar products
+ */
+export async function retrieveSimilarContextByImage(
+  imageBase64: string,
+  opts?: { matchCount?: number; minSimilarity?: number }
+): Promise<RetrievedProduct[]> {
+  const queryEmbedding = await embedImageWithVertex(imageBase64);
+  const matchCount = Math.max(1, opts?.matchCount ?? env.RAG_MATCH_COUNT);
+  const matchThreshold = Math.max(0, Math.min(1, opts?.minSimilarity ?? env.RAG_MIN_SIMILARITY));
+
+  logger.info(
+    { matchCount, matchThreshold, embeddingDim: queryEmbedding.length },
+    '🔎 Supabase: Querying vector search (image)'
+  );
+
+  // Image search uses pure vector similarity (no text/hybrid)
+  const { data: vec, error } = await supabase.rpc(env.SUPABASE_MATCH_EMBEDDING_FN, {
+    query_embedding: queryEmbedding,
+    match_threshold: matchThreshold,
+    match_count: matchCount
+  });
+
+  if (error) {
+    logger.error({ error }, '❌ Supabase: Image vector search failed');
+    throw error;
+  }
+
+  logger.info(
+    { vectorResults: vec?.length ?? 0 },
+    '📊 Supabase: Image search results received'
+  );
+
+  const rows = (vec ?? [])
+    .sort((a: any, b: any) => (b.similarity ?? 0) - (a.similarity ?? 0))
+    .slice(0, matchCount);
+
+  logger.info(
+    {
+      finalCount: rows.length,
+      topResults: rows.slice(0, 3).map((r: any) => ({ id: r.id, name: r.name, similarity: r.similarity }))
+    },
+    '✅ Supabase: Image search results ranked'
   );
 
   return rows.map((r: any) => ({

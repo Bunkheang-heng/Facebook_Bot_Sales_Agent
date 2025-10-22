@@ -74,7 +74,7 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
 
   // Process each messaging event
   for (const event of events) {
-    const { senderId, messageText, mid } = event;
+    const { senderId, messageText, mid, imageUrl, hasImage } = event;
 
     // Apply rate limiting
     if (!rateLimiter.allowEvent(senderId)) {
@@ -88,8 +88,13 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
     sendSenderAction(PAGE_ACCESS_TOKEN!, senderId, 'typing_on')
       .catch((err) => logger.debug({ err }, 'Failed to send typing indicator'));
 
-    // Handle conversation asynchronously
-    handleConversation(senderId, clipped, mid ? { mid } : undefined)
+    // Handle conversation asynchronously (with image if present)
+    const conversationOpts = {
+      mid,
+      ...(hasImage && imageUrl ? { imageUrl } : {})
+    };
+    
+    handleConversation(senderId, clipped, conversationOpts)
       .then(async (resp) => {
         try {
           if (resp.products && resp.products.length > 0) {

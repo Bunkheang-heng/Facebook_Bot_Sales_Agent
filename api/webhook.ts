@@ -81,7 +81,7 @@ export default async function handler(req: any, res: any) {
 
     // Process each messaging event
     for (const event of events) {
-      const { senderId, messageText, mid } = event;
+      const { senderId, messageText, mid, imageUrl, hasImage } = event;
 
       // Apply rate limiting
       if (!rateLimiter.allowEvent(senderId)) {
@@ -94,7 +94,14 @@ export default async function handler(req: any, res: any) {
       tasks.push((async () => {
         try {
           await sendSenderAction(PAGE_ACCESS_TOKEN, senderId, 'typing_on');
-          const resp = await handleConversation(senderId, clipped, mid ? { mid } : undefined);
+          
+          // Prepare conversation options (with image if present)
+          const conversationOpts = {
+            mid,
+            ...(hasImage && imageUrl ? { imageUrl } : {})
+          };
+          
+          const resp = await handleConversation(senderId, clipped, conversationOpts);
           
           if (resp.products && resp.products.length > 0) {
             await sendProductCarousel(PAGE_ACCESS_TOKEN, senderId, resp.products);

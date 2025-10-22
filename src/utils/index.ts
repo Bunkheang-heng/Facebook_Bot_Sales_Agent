@@ -23,4 +23,9 @@ export {
   shouldShowCarousel,
   extractMentionedProducts
 } from './ai-product-matcher';
+export {
+  downloadImageAsBase64,
+  isValidImageUrl,
+  getImageContentType
+} from './image';
 
