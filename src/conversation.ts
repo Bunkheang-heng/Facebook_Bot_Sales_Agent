@@ -5,6 +5,7 @@ import { generateAiReplyWithHistory, refreshThreadSummary } from './ai';
 import { normalizePhone } from './services/phone';
 import { retrieveSimilarContext, type RetrievedProduct } from './services/rag';
 import { logger } from './logger';
+import { getProductsForCarousel, shouldShowCarousel } from './utils/ai-product-matcher';
 
 export type ConversationResponse = { text: string; products?: RetrievedProduct[] };
 
@@ -24,23 +25,26 @@ export async function handleConversation(userId: string, userMessageText: string
     }
 
     await updateLead(userId, { item: msg, stage: 'ask_name' });
-    let products: RetrievedProduct[] | undefined;
+    let productsToDisplay: RetrievedProduct[] | undefined;
     try {
       logger.info({ userId, query: msg }, '🔍 RAG: Starting product search');
-      const found = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
-      if (found && found.length > 0) {
-        products = found;
+      // Retrieve products for context
+      const allProducts = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
+      
+      if (allProducts && allProducts.length > 0) {
         logger.info(
           {
             userId,
             query: msg,
-            matchCount: found.length,
-            topMatch: found[0]?.name,
-            topSimilarity: found[0]?.similarity,
-            products: found.map((p) => ({ id: p.id, name: p.name, price: p.price, similarity: p.similarity }))
+            retrieved: allProducts.length,
+            topMatch: allProducts[0]?.name,
+            topSimilarity: allProducts[0]?.similarity
           },
           '✅ RAG: Products retrieved'
         );
+        
+        // For initial stage, just show the response without carousel
+        // Carousel will be shown after AI generates response in general chat
       } else {
         logger.info({ userId, query: msg }, '⚠️ RAG: No products found');
       }
@@ -50,7 +54,7 @@ export async function handleConversation(userId: string, userMessageText: string
 
     const reply = prompts.askName;
     await saveAssistantMessage(userId, reply);
-    return products ? { text: reply, products } : { text: reply };
+    return { text: reply };
   }
   if (lead.stage === 'ask_name') {
     await updateLead(userId, { name: msg, stage: 'ask_phone' });
@@ -70,22 +74,24 @@ export async function handleConversation(userId: string, userMessageText: string
   }
   
   // General chat - check if user is asking about products
-  let products: RetrievedProduct[] | undefined;
+  let allProducts: RetrievedProduct[] | undefined;
+  let productsToDisplay: RetrievedProduct[] | undefined;
   const lowerMsg = msg.toLowerCase();
-  const isProductQuery = /\b(product|shoe|sneaker|item|what.*have|show|looking for|buy|purchase|available)\b/i.test(lowerMsg);
+  const isProductQuery = /\b(product|shoe|sneaker|item|what.*have|show|looking for|buy|purchase|available|pant|shirt|jacket|dress|wear)\b/i.test(lowerMsg);
   
   if (isProductQuery) {
     try {
       logger.info({ userId, query: msg }, '🔍 RAG: Product query detected in general chat');
-      const found = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
-      if (found && found.length > 0) {
-        products = found;
+      // Retrieve products for AI context
+      allProducts = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
+      
+      if (allProducts && allProducts.length > 0) {
         logger.info(
           {
             userId,
-            matchCount: found.length,
-            topMatch: found[0]?.name,
-            products: found.map((p) => ({ id: p.id, name: p.name, price: p.price, similarity: p.similarity }))
+            retrieved: allProducts.length,
+            topMatch: allProducts[0]?.name,
+            topSimilarity: allProducts[0]?.similarity
           },
           '✅ RAG: Products retrieved for general chat'
         );
@@ -95,11 +101,29 @@ export async function handleConversation(userId: string, userMessageText: string
     }
   }
   
-  const reply = await generateAiReplyWithHistory(userId, msg, lead);
+  // Generate AI response with product context
+  const reply = await generateAiReplyWithHistory(userId, msg, lead, allProducts);
+  
+  // IMPORTANT: Filter products based on what AI actually mentioned in response
+  // This prevents showing irrelevant products (e.g., shoes when AI recommends pants)
+  if (allProducts && allProducts.length > 0) {
+    if (shouldShowCarousel(reply, allProducts)) {
+      productsToDisplay = getProductsForCarousel(reply, allProducts, 2, 0.3);
+      
+      if (productsToDisplay.length === 0) {
+        logger.info({ userId }, '📊 No products matched AI recommendation, skipping carousel');
+      }
+    } else {
+      logger.info({ userId }, '📊 Products quality too low or not mentioned, skipping carousel');
+    }
+  }
+  
   // Non-blocking persistence
   saveAssistantMessage(userId, reply).catch(() => {});
   if (Math.random() < 0.1) refreshThreadSummary(userId).catch(() => {});
-  return products ? { text: reply, products } : { text: reply };
+  return productsToDisplay && productsToDisplay.length > 0 
+    ? { text: reply, products: productsToDisplay } 
+    : { text: reply };
 }
 
 

@@ -1,5 +1,6 @@
 import { db } from '../firebase';
 import { Timestamp } from 'firebase-admin/firestore';
+import { clampText } from '../utils/text';
 
 type Role = 'user' | 'assistant' | 'system';
 
@@ -11,13 +12,8 @@ export type ChatMessage = {
 
 const THREADS = 'threads';
 
-function clampContent(input: string, max = 1000): string {
-  const t = input.trim();
-  return t.length <= max ? t : t.slice(0, max) + '…';
-}
-
 export async function saveMessage(userId: string, msg: { role: Role; content: string; ts?: number }, id?: string) {
-  const content = clampContent(msg.content);
+  const content = clampText(msg.content, 1000);
   const ref = id
     ? db.collection(THREADS).doc(userId).collection('messages').doc(id)
     : db.collection(THREADS).doc(userId).collection('messages').doc();

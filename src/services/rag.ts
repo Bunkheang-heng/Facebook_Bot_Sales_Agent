@@ -12,16 +12,34 @@ export type RetrievedProduct = {
   similarity: number;
 };
 
+// Cache token to avoid 2s overhead on every request
+let cachedToken: { token: string; expiresAt: number } | null = null;
+
 async function getAccessToken(): Promise<string> {
+  const now = Date.now();
+  // Return cached token if still valid (with 1min buffer)
+  if (cachedToken && cachedToken.expiresAt > now + 60000) {
+    logger.debug('Using cached access token');
+    return cachedToken.token;
+  }
+  
+  logger.info('Fetching new access token');
   const privateKey = env.GOOGLE_CLOUD_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/\n/g, '\n');
   const auth = new GoogleAuth({
     credentials: { client_email: env.GOOGLE_CLOUD_CLIENT_EMAIL, private_key: privateKey },
     scopes: ['https://www.googleapis.com/auth/cloud-platform']
   });
   const client = await auth.getClient();
-  const token = await client.getAccessToken();
-  if (!token || !token.token) throw new Error('Failed to obtain Google access token');
-  return token.token;
+  const tokenResponse = await client.getAccessToken();
+  if (!tokenResponse || !tokenResponse.token) throw new Error('Failed to obtain Google access token');
+  
+  // Cache for 55 minutes (tokens expire in 1 hour)
+  cachedToken = {
+    token: tokenResponse.token,
+    expiresAt: now + 3300000
+  };
+  
+  return tokenResponse.token;
 }
 
 export async function embedTextWithVertex(text: string): Promise<number[]> {
@@ -139,5 +157,3 @@ export function buildRagContext(products: RetrievedProduct[], maxChars = 2000): 
   const text = (header + body).slice(0, maxChars);
   return text;
 }
-
-

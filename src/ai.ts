@@ -4,6 +4,7 @@ import { buildRagContext, retrieveSimilarContext } from './services/rag';
 import { getRecentMessages, getSummary, setSummary } from './services/history';
 import type { LeadDoc } from './services/leads';
 import { logger } from './logger';
+import { clampText } from './utils/text';
 
 let openaiClient: OpenAI | null = null;
 
@@ -18,14 +19,8 @@ function getOpenAI(): OpenAI {
   return openaiClient;
 }
 
-function clampInput(input: string, maxChars = 800): string {
-  const trimmed = input.trim();
-  if (trimmed.length <= maxChars) return trimmed;
-  return trimmed.slice(0, maxChars) + '…';
-}
-
 export async function generateAiReply(userMessageText: string): Promise<string> {
-  const safeUser = clampInput(userMessageText);
+  const safeUser = clampText(userMessageText, 800);
 
   const completion = await getOpenAI().chat.completions.create({
     model: 'gpt-4o-mini',
@@ -42,22 +37,25 @@ export async function generateAiReply(userMessageText: string): Promise<string> 
   const response = content && content.length > 0
     ? content
     : "I'm here and ready to help! Could you rephrase your question?";
-  return clampInput(response, 800);
+  return clampText(response, 800);
 }
 
 // History-aware generation with lead-context injection
 export async function generateAiReplyWithHistory(
   userId: string,
   userMessageText: string,
-  lead?: LeadDoc
+  lead?: LeadDoc,
+  preRetrievedProducts?: any[] // Avoid duplicate RAG calls
 ): Promise<string> {
   logger.info({ userId, query: userMessageText.slice(0, 100) }, '🤖 AI: Starting context-aware reply generation');
 
-  const [recent, summary, retrieved] = await Promise.all([
+  const [recent, summary] = await Promise.all([
     getRecentMessages(userId, 8),
-    getSummary(userId),
-    retrieveSimilarContext(userMessageText).catch(() => [])
+    getSummary(userId)
   ]);
+  
+  // Use pre-retrieved products if available, otherwise fetch
+  const retrieved = preRetrievedProducts ?? await retrieveSimilarContext(userMessageText).catch(() => []);
 
   const leadFacts = lead
     ? [
@@ -82,7 +80,7 @@ export async function generateAiReplyWithHistory(
 
   const historyMessages = recent.map((m) => ({
     role: m.role as 'user' | 'assistant',
-    content: clampInput(m.content)
+    content: clampText(m.content, 800)
   }));
 
   logger.info(
@@ -104,7 +102,7 @@ export async function generateAiReplyWithHistory(
     messages: [
       { role: 'system', content: contextPreamble },
       ...historyMessages,
-      { role: 'user', content: clampInput(userMessageText) }
+      { role: 'user', content: clampText(userMessageText, 800) }
     ]
   });
 
@@ -120,7 +118,7 @@ export async function generateAiReplyWithHistory(
     '✅ AI: Reply generated'
   );
 
-  return clampInput(response, 800);
+  return clampText(response, 800);
 }
 
 // Optional: summarize long threads to reduce tokens
