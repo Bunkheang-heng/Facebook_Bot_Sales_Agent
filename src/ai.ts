@@ -5,6 +5,7 @@ import { getRecentMessages, getSummary, setSummary } from './services/history';
 import type { LeadDoc } from './services/leads';
 import { logger } from './logger';
 import { clampText } from './utils/text';
+import { cleanAIResponse } from './utils/formatting';
 
 let openaiClient: OpenAI | null = null;
 
@@ -37,7 +38,10 @@ export async function generateAiReply(userMessageText: string): Promise<string> 
   const response = content && content.length > 0
     ? content
     : "I'm here and ready to help! Could you rephrase your question?";
-  return clampText(response, 800);
+  
+  // Clean markdown formatting that Messenger doesn't support
+  const cleaned = cleanAIResponse(response);
+  return clampText(cleaned, 800);
 }
 
 // History-aware generation with lead-context injection
@@ -109,16 +113,19 @@ export async function generateAiReplyWithHistory(
   const content = completion.choices?.[0]?.message?.content?.trim();
   const response = content && content.length > 0 ? content : 'Sure—how can I help further?';
   
+  // Clean markdown formatting that Messenger doesn't support
+  const cleaned = cleanAIResponse(response);
+  
   logger.info(
     {
       userId,
-      responseLength: response.length,
+      responseLength: cleaned.length,
       tokensUsed: completion.usage?.total_tokens
     },
     '✅ AI: Reply generated'
   );
 
-  return clampText(response, 800);
+  return clampText(cleaned, 800);
 }
 
 // Optional: summarize long threads to reduce tokens

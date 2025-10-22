@@ -28,4 +28,8 @@ export {
   isValidImageUrl,
   getImageContentType
 } from './image';
+export {
+  stripMarkdown,
+  cleanAIResponse
+} from './formatting';
 
