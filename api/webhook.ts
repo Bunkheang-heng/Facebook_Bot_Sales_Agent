@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { env } from '../src/config';
 import { logger } from '../src/logger';
 import { handleConversation } from '../src/conversation';
-import { sendSenderAction, sendTextMessage } from '../src/social/facebook';
+import { sendSenderAction, sendTextMessage, sendProductCarousel } from '../src/social/facebook';
 
 type RateBucket = { count: number; resetAt: number };
 const userRateBuckets: Map<string, RateBucket> = new Map();
@@ -111,8 +111,11 @@ export default async function handler(req: any, res: any) {
           tasks.push((async () => {
             try {
               await sendSenderAction(PAGE_ACCESS_TOKEN, senderId, 'typing_on');
-              const reply = await handleConversation(senderId, clipped, mid ? { mid } : undefined);
-              await sendTextMessage(PAGE_ACCESS_TOKEN, senderId, reply);
+              const resp = await handleConversation(senderId, clipped, mid ? { mid } : undefined);
+              if (resp.products && resp.products.length > 0) {
+                await sendProductCarousel(PAGE_ACCESS_TOKEN, senderId, resp.products);
+              }
+              await sendTextMessage(PAGE_ACCESS_TOKEN, senderId, resp.text);
             } catch (err: any) {
               console.error('Failed to handle message event', err?.response?.data ?? err);
             }

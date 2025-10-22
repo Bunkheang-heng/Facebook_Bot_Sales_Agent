@@ -2,6 +2,8 @@ import axios from 'axios';
 import http from 'node:http';
 import https from 'node:https';
 import crypto from 'crypto';
+import type { RetrievedProduct } from '../services/rag';
+import { logger } from '../logger';
 
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 50 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
@@ -31,6 +33,64 @@ export async function sendTextMessage(pageAccessToken: string, recipientPsid: st
     messaging_type: 'RESPONSE',
     message: { text }
   }, { params: buildParams(pageAccessToken) });
+}
+
+export async function sendProductCarousel(pageAccessToken: string, recipientPsid: string, products: RetrievedProduct[]): Promise<void> {
+  if (!products || products.length === 0) return;
+  
+  logger.info(
+    {
+      recipientPsid,
+      productCount: products.length,
+      products: products.map((p) => ({ id: p.id, name: p.name, price: p.price, image_url: p.image_url }))
+    },
+    '📤 Messenger: Sending product carousel'
+  );
+
+  const elements = products.slice(0, 10).map((p) => {
+    const element: any = {
+      title: p.name?.slice(0, 80) || 'Product',
+      buttons: (
+        p.price == null
+          ? []
+          : [{ type: 'postback', title: `$${p.price}`, payload: `PRICE_${p.id}` }]
+      )
+    };
+
+    // Add subtitle if exists
+    if (p.description) {
+      element.subtitle = p.description.toString().slice(0, 80);
+    }
+
+    // Add image_url only if it's a valid URL
+    if (p.image_url && typeof p.image_url === 'string' && p.image_url.trim().length > 0) {
+      const url = p.image_url.trim();
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        element.image_url = url;
+      }
+    }
+
+    return element;
+  });
+
+  const payload = {
+    recipient: { id: recipientPsid },
+    messaging_type: 'RESPONSE',
+    message: {
+      attachment: {
+        type: 'template',
+        payload: {
+          template_type: 'generic',
+          elements
+        }
+      }
+    }
+  };
+
+  logger.info({ recipientPsid, cardCount: elements.length, sampleElement: elements[0] }, '🔍 Messenger: Carousel payload');
+
+  await graph.post('/me/messages', payload, { params: buildParams(pageAccessToken) });
+  logger.info({ recipientPsid, cardCount: elements.length }, '✅ Messenger: Carousel sent');
 }
 
 

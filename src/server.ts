@@ -3,7 +3,7 @@ dotenv.config();
 
 import express, { type Request, type Response } from 'express';
 import crypto from 'crypto';
-import { sendSenderAction, sendTextMessage } from './social/facebook';
+import { sendSenderAction, sendTextMessage, sendProductCarousel } from './social/facebook';
 import { handleConversation } from './conversation';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -115,8 +115,13 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
           .catch(() => {})
           .finally(() => {})
         handleConversation(senderId, clipped, mid ? { mid } : undefined)
-          .then((reply) => {
-            return sendTextMessage(PAGE_ACCESS_TOKEN!, senderId, reply);
+          .then(async (resp) => {
+            try {
+              if (resp.products && resp.products.length > 0) {
+                await sendProductCarousel(PAGE_ACCESS_TOKEN!, senderId, resp.products);
+              }
+            } catch {}
+            return sendTextMessage(PAGE_ACCESS_TOKEN!, senderId, resp.text);
           })
           .catch((err) => {
             console.error('Failed to generate/send AI reply', err?.response?.data ?? err);

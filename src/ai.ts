@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
 import { systemPrompt } from './prompts';
+import { buildRagContext, retrieveSimilarContext } from './services/rag';
 import { getRecentMessages, getSummary, setSummary } from './services/history';
 import type { LeadDoc } from './services/leads';
+import { logger } from './logger';
 
 let openaiClient: OpenAI | null = null;
 
@@ -49,8 +51,13 @@ export async function generateAiReplyWithHistory(
   userMessageText: string,
   lead?: LeadDoc
 ): Promise<string> {
-  const recent = await getRecentMessages(userId, 8);
-  const summary = await getSummary(userId);
+  logger.info({ userId, query: userMessageText.slice(0, 100) }, '🤖 AI: Starting context-aware reply generation');
+
+  const [recent, summary, retrieved] = await Promise.all([
+    getRecentMessages(userId, 8),
+    getSummary(userId),
+    retrieveSimilarContext(userMessageText).catch(() => [])
+  ]);
 
   const leadFacts = lead
     ? [
@@ -63,10 +70,12 @@ export async function generateAiReplyWithHistory(
         .join('\n')
     : '';
 
+  const ragBlock = buildRagContext(retrieved as any);
   const contextPreamble = [
     systemPrompt,
     leadFacts ? `Known customer details:\n${leadFacts}` : null,
-    summary ? `Conversation summary:\n${summary}` : null
+    summary ? `Conversation summary:\n${summary}` : null,
+    ragBlock ? ragBlock : null
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -75,6 +84,18 @@ export async function generateAiReplyWithHistory(
     role: m.role as 'user' | 'assistant',
     content: clampInput(m.content)
   }));
+
+  logger.info(
+    {
+      userId,
+      historyCount: historyMessages.length,
+      hasSummary: !!summary,
+      hasLeadFacts: !!leadFacts,
+      retrievedProducts: retrieved.length,
+      contextLength: contextPreamble.length
+    },
+    '📝 AI: Context assembled'
+  );
 
   const completion = await getOpenAI().chat.completions.create({
     model: 'gpt-4o-mini',
@@ -89,6 +110,16 @@ export async function generateAiReplyWithHistory(
 
   const content = completion.choices?.[0]?.message?.content?.trim();
   const response = content && content.length > 0 ? content : 'Sure—how can I help further?';
+  
+  logger.info(
+    {
+      userId,
+      responseLength: response.length,
+      tokensUsed: completion.usage?.total_tokens
+    },
+    '✅ AI: Reply generated'
+  );
+
   return clampInput(response, 800);
 }
 
