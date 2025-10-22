@@ -1,8 +1,8 @@
 import OpenAI from 'openai';
 import { systemPrompt } from './prompts';
 import { buildRagContext, retrieveSimilarContext } from './services/rag';
-import { getRecentMessages, getSummary, setSummary } from './services/history';
-import type { LeadDoc } from './services/leads';
+import { getChatHistory, getConversationSummary, updateConversationSummary } from './services/history-supabase';
+import type { LeadDoc } from './services/leads-supabase';
 import { logger } from './logger';
 import { clampText } from './utils/text';
 import { cleanAIResponse } from './utils/formatting';
@@ -54,8 +54,8 @@ export async function generateAiReplyWithHistory(
   logger.info({ userId, query: userMessageText.slice(0, 100) }, '🤖 AI: Starting context-aware reply generation');
 
   const [recent, summary] = await Promise.all([
-    getRecentMessages(userId, 8),
-    getSummary(userId)
+    getChatHistory(userId, 8),
+    getConversationSummary(userId)
   ]);
   
   // Use pre-retrieved products if available, otherwise fetch
@@ -82,7 +82,8 @@ export async function generateAiReplyWithHistory(
     .filter(Boolean)
     .join('\n\n');
 
-  const historyMessages = recent.map((m) => ({
+  // Reverse to get chronological order (getChatHistory returns DESC)
+  const historyMessages = recent.reverse().map((m) => ({
     role: m.role as 'user' | 'assistant',
     content: clampText(m.content, 800)
   }));
@@ -130,9 +131,10 @@ export async function generateAiReplyWithHistory(
 
 // Optional: summarize long threads to reduce tokens
 export async function refreshThreadSummary(userId: string): Promise<void> {
-  const recent = await getRecentMessages(userId, 50);
+  const recent = await getChatHistory(userId, 50);
   if (recent.length < 20) return; // summarize only when long enough
   const text = recent
+    .reverse() // Reverse to chronological order
     .map((t) => `${t.role.toUpperCase()}: ${t.content}`)
     .join('\n')
     .slice(0, 6000);
@@ -151,6 +153,6 @@ export async function refreshThreadSummary(userId: string): Promise<void> {
     ]
   });
   const summary = completion.choices?.[0]?.message?.content?.trim();
-  if (summary) await setSummary(userId, summary);
+  if (summary) await updateConversationSummary(userId, summary, recent.length);
 }
 

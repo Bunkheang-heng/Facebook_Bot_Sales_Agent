@@ -21,6 +21,8 @@ const Env = z.object({
   // RAG tuning
   RAG_MATCH_COUNT: z.coerce.number().default(5),
   RAG_MIN_SIMILARITY: z.coerce.number().default(0),
+  // Product filtering by tenant
+  PRODUCT_TENANT_ID: z.string().optional(),
   PORT: z.coerce.number().default(3000)
 });
 

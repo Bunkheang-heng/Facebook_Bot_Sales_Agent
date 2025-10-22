@@ -122,30 +122,45 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
   const matchThreshold = Math.max(0, Math.min(1, opts?.minSimilarity ?? env.RAG_MIN_SIMILARITY));
 
   logger.info(
-    { query: queryText, matchCount, matchThreshold, embeddingDim: queryEmbedding.length },
+    { 
+      query: queryText, 
+      matchCount, 
+      matchThreshold, 
+      embeddingDim: queryEmbedding.length,
+      filterByTenant: env.PRODUCT_TENANT_ID || 'none'
+    },
     '🔎 Supabase: Querying hybrid + vector search (text)'
   );
 
+  // Build RPC params with optional tenant filter
+  const rpcParams: any = {
+    query_text: queryText,
+    query_embedding: queryEmbedding,
+    match_threshold: matchThreshold,
+    match_count: matchCount
+  };
+
+  // Add tenant_id filter if configured
+  if (env.PRODUCT_TENANT_ID) {
+    rpcParams.filter_tenant_id = env.PRODUCT_TENANT_ID;
+  }
+
   const [{ data: hybrid, error: e1 }, { data: vec, error: e2 }] = await Promise.all([
-    supabase.rpc(env.SUPABASE_MATCH_TEXT_FN, {
-      query_text: queryText,
-      query_embedding: queryEmbedding,
-      match_threshold: matchThreshold,
-      match_count: matchCount
-    }),
+    supabase.rpc(env.SUPABASE_MATCH_TEXT_FN, rpcParams),
     supabase.rpc(env.SUPABASE_MATCH_EMBEDDING_FN, {
       query_embedding: queryEmbedding,
       match_threshold: matchThreshold,
-      match_count: matchCount
+      match_count: matchCount,
+      ...(env.PRODUCT_TENANT_ID ? { filter_tenant_id: env.PRODUCT_TENANT_ID } : {})
     })
   ]);
 
   if (e1) {
-    logger.error({ error: e1 }, '❌ Supabase: Hybrid search failed');
+    logger.error({ error: e1, query: queryText.slice(0, 50) }, '❌ RAG TEXT SEARCH FAILED (Hybrid)');
     throw e1;
   }
   if (e2) {
-    logger.error({ error: e2 }, '❌ Supabase: Vector search failed');
+    logger.error({ error: e2, query: queryText.slice(0, 50) }, '❌ RAG TEXT SEARCH FAILED (Vector)');
     throw e2;
   }
 
@@ -174,7 +189,7 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
     '✅ Supabase: Results merged and ranked'
   );
 
-  return rows.map((r: any) => ({
+  const products = rows.map((r: any) => ({
     id: String(r.id),
     name: String(r.name ?? ''),
     description: r.description ?? null,
@@ -182,6 +197,31 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
     image_url: r.image_url ?? null,
     similarity: Number(r.similarity ?? 0)
   }));
+
+  // Final success/failure summary
+  if (products.length > 0) {
+    const bestProduct = products[0]!; // Safe: length > 0
+    logger.info(
+      { 
+        query: queryText.slice(0, 50),
+        productCount: products.length,
+        bestMatch: bestProduct.name,
+        bestSimilarity: bestProduct.similarity.toFixed(3),
+        tenantFilter: env.PRODUCT_TENANT_ID || 'none'
+      },
+      '✅ RAG TEXT SEARCH SUCCESS'
+    );
+  } else {
+    logger.warn(
+      { 
+        query: queryText.slice(0, 50),
+        tenantFilter: env.PRODUCT_TENANT_ID || 'none'
+      },
+      '⚠️ RAG TEXT SEARCH: NO RESULTS'
+    );
+  }
+
+  return products;
 }
 
 /**
@@ -199,19 +239,32 @@ export async function retrieveSimilarContextByImage(
   const matchThreshold = Math.max(0, Math.min(1, opts?.minSimilarity ?? env.RAG_MIN_SIMILARITY));
 
   logger.info(
-    { matchCount, matchThreshold, embeddingDim: queryEmbedding.length },
+    { 
+      matchCount, 
+      matchThreshold, 
+      embeddingDim: queryEmbedding.length,
+      filterByTenant: env.PRODUCT_TENANT_ID || 'none'
+    },
     '🔎 Supabase: Querying vector search (image)'
   );
 
-  // Image search uses pure vector similarity (no text/hybrid)
-  const { data: vec, error } = await supabase.rpc(env.SUPABASE_MATCH_EMBEDDING_FN, {
+  // Build RPC params with optional tenant filter
+  const rpcParams: any = {
     query_embedding: queryEmbedding,
     match_threshold: matchThreshold,
     match_count: matchCount
-  });
+  };
+
+  // Add tenant_id filter if configured
+  if (env.PRODUCT_TENANT_ID) {
+    rpcParams.filter_tenant_id = env.PRODUCT_TENANT_ID;
+  }
+
+  // Image search uses pure vector similarity (no text/hybrid)
+  const { data: vec, error } = await supabase.rpc(env.SUPABASE_MATCH_EMBEDDING_FN, rpcParams);
 
   if (error) {
-    logger.error({ error }, '❌ Supabase: Image vector search failed');
+    logger.error({ error }, '❌ RAG IMAGE SEARCH FAILED');
     throw error;
   }
 
@@ -232,7 +285,7 @@ export async function retrieveSimilarContextByImage(
     '✅ Supabase: Image search results ranked'
   );
 
-  return rows.map((r: any) => ({
+  const products = rows.map((r: any) => ({
     id: String(r.id),
     name: String(r.name ?? ''),
     description: r.description ?? null,
@@ -240,6 +293,29 @@ export async function retrieveSimilarContextByImage(
     image_url: r.image_url ?? null,
     similarity: Number(r.similarity ?? 0)
   }));
+
+  // Final success/failure summary
+  if (products.length > 0) {
+    const bestProduct = products[0]!; // Safe: length > 0
+    logger.info(
+      { 
+        productCount: products.length,
+        bestMatch: bestProduct.name,
+        bestSimilarity: bestProduct.similarity.toFixed(3),
+        tenantFilter: env.PRODUCT_TENANT_ID || 'none'
+      },
+      '✅ RAG IMAGE SEARCH SUCCESS'
+    );
+  } else {
+    logger.warn(
+      { 
+        tenantFilter: env.PRODUCT_TENANT_ID || 'none'
+      },
+      '⚠️ RAG IMAGE SEARCH: NO RESULTS'
+    );
+  }
+
+  return products;
 }
 
 export function buildRagContext(products: RetrievedProduct[], maxChars = 2000): string {

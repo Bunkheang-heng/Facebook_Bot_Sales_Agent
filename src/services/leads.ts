@@ -1,6 +1,20 @@
 import { db } from '../firebase';
 
-export type ConversationStage = 'ask_item' | 'ask_name' | 'ask_phone' | 'ask_address' | 'completed';
+export type ConversationStage = 
+  | 'ask_item' 
+  | 'ask_name' 
+  | 'ask_phone' 
+  | 'ask_address' 
+  | 'completed'
+  | 'confirm_order'
+  | 'processing_order';
+
+export type OrderItem = {
+  productId: string;
+  productName: string;
+  quantity: number;
+  price: number;
+};
 
 export type LeadDoc = {
   userId: string;
@@ -10,6 +24,13 @@ export type LeadDoc = {
   address?: string;
   stage: ConversationStage;
   updatedAt: number;
+  
+  // Order-specific fields
+  pendingOrder?: {
+    items: OrderItem[];
+    total: number;
+  } | undefined;
+  lastOrderId?: string | undefined;
 };
 
 const COLLECTION = 'leads';
