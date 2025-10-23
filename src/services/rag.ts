@@ -118,7 +118,11 @@ export async function embedImageWithVertex(imageBase64: string): Promise<number[
 
 export async function retrieveSimilarContext(queryText: string, opts?: { matchCount?: number; minSimilarity?: number }): Promise<RetrievedProduct[]> {
   const queryEmbedding = await embedTextWithVertex(queryText);
-  const matchCount = Math.max(1, opts?.matchCount ?? env.RAG_MATCH_COUNT);
+  // For recommendation queries, fetch more products (up to 10)
+  const defaultCount = queryText.toLowerCase().includes('recommend') || 
+                       queryText.toLowerCase().includes('show') ||
+                       queryText.toLowerCase().includes('options') ? 10 : env.RAG_MATCH_COUNT;
+  const matchCount = Math.max(1, opts?.matchCount ?? defaultCount);
   const matchThreshold = Math.max(0, Math.min(1, opts?.minSimilarity ?? env.RAG_MIN_SIMILARITY));
 
   logger.info(

@@ -19,6 +19,13 @@ export type OrderItem = {
   price: number;
 };
 
+export type ProductInfo = {
+  id: string;
+  name: string;
+  price: number;
+  similarity?: number;
+};
+
 export type LeadDoc = {
   id?: string;
   userId: string;
@@ -33,6 +40,7 @@ export type LeadDoc = {
     total: number;
   } | null;
   lastOrderId?: string | null;
+  lastShownProducts?: ProductInfo[] | null;  // NEW: Store products from last product query
 };
 
 /**
@@ -60,7 +68,8 @@ export async function getOrCreateLead(userId: string): Promise<LeadDoc> {
       address: existing.address,
       stage: existing.stage as ConversationStage,
       pendingOrder: existing.pending_order,
-      lastOrderId: existing.last_order_id
+      lastOrderId: existing.last_order_id,
+      lastShownProducts: existing.last_shown_products
     };
   }
 
@@ -106,6 +115,7 @@ export async function updateLead(userId: string, updates: Partial<LeadDoc>): Pro
   if (updates.stage !== undefined) dbUpdates.stage = updates.stage;
   if (updates.pendingOrder !== undefined) dbUpdates.pending_order = updates.pendingOrder;
   if (updates.lastOrderId !== undefined) dbUpdates.last_order_id = updates.lastOrderId;
+  if (updates.lastShownProducts !== undefined) dbUpdates.last_shown_products = updates.lastShownProducts;
 
   const { error } = await supabase
     .from('leads')

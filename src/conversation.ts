@@ -65,7 +65,7 @@ export async function handleConversation(
     await saveAssistantMessage(userId, prompts.done);
     return { text: prompts.done };
   }
-
+  
   // Handle order confirmation
   if (lead.stage === 'confirm_order') {
     const lower = msg.toLowerCase().trim();
@@ -80,17 +80,30 @@ export async function handleConversation(
       }
 
       try {
-        logger.info({ userId, pendingOrder: lead.pendingOrder }, '📦 Creating order');
+        logger.info({ 
+          userId, 
+          customerName: lead.name,
+          customerPhone: lead.phone,
+          pendingOrder: lead.pendingOrder 
+        }, '📦 Starting order creation process');
 
-        // Create customer
+        // Step 1: Create/find customer
+        logger.info({ userId }, '👤 Creating/finding customer...');
         const customer = await findOrCreateCustomer(
           lead.name,
           lead.phone,
-          undefined,
+          lead.email || undefined,
           lead.address
         );
+        logger.info({ userId, customerId: customer.id }, '✅ Customer ready');
 
-        // Create order
+        // Step 2: Validate order items
+        if (!lead.pendingOrder?.items || lead.pendingOrder.items.length === 0) {
+          throw new Error('No items in pending order');
+        }
+
+        // Step 3: Create order with items
+        logger.info({ userId, customerId: customer.id }, '📝 Creating order in database...');
         const order = await createOrder(
           customer.id,
           lead.pendingOrder.items.map(item => ({
@@ -102,24 +115,55 @@ export async function handleConversation(
         );
 
         logger.info(
-          { userId, orderId: order.id, total: order.total },
-          '✅ Order created successfully'
+          { 
+            userId, 
+            orderId: order.id, 
+            customerId: customer.id,
+            total: order.total,
+            itemCount: order.items.length
+          },
+          '✅✅✅ ORDER SAVED IN DATABASE'
         );
 
-        // Update lead
+        // Step 4: Update lead state
+        logger.info({ userId, orderId: order.id }, '💾 Updating lead state...');
         await updateLead(userId, {
           stage: 'completed',
           lastOrderId: order.id,
           pendingOrder: null
         });
+        logger.info({ userId }, '✅ Lead updated');
 
+        // Step 5: Send confirmation
         const confirmMsg = orderConfirmedPrompt(order.id, order.total);
         await saveAssistantMessage(userId, confirmMsg);
+        
+        logger.info(
+          { 
+            userId, 
+            orderId: order.id,
+            customerName: lead.name,
+            total: order.total
+          },
+          '🎉 ORDER FLOW COMPLETED SUCCESSFULLY'
+        );
+
         return { text: confirmMsg };
 
       } catch (error: any) {
-        logger.error({ userId, error: error.message }, '❌ Failed to create order');
-        const errorMsg = 'Sorry, there was an error processing your order. Please try again later.';
+        logger.error({ 
+          userId, 
+          error: error.message,
+          stack: error.stack,
+          leadData: {
+            name: lead.name,
+            phone: lead.phone,
+            address: lead.address,
+            hasPendingOrder: !!lead.pendingOrder
+          }
+        }, '❌❌❌ ORDER CREATION FAILED');
+        
+        const errorMsg = 'Sorry, there was an error processing your order. Please try again or contact support.';
         await saveAssistantMessage(userId, errorMsg);
         return { text: errorMsg };
       }
@@ -141,11 +185,19 @@ export async function handleConversation(
   let allProducts: RetrievedProduct[] | undefined;
   let productsToDisplay: RetrievedProduct[] | undefined;
   const lowerMsg = msg.toLowerCase();
+  
+  // IMPORTANT: Check if user is confirming an order (don't do RAG search for confirmations)
+  const confirmKeywords = ['i\'ll take', 'i will take', 'i want this', 'i want that', 'buy this', 'buy that', 'yes', 'confirm'];
+  const isLikelyConfirming = confirmKeywords.some(keyword => lowerMsg.includes(keyword)) && lowerMsg.length < 100;
+  
   const isProductQuery = /\b(product|shoe|sneaker|item|what.*have|show|looking for|buy|purchase|available|pant|shirt|jacket|dress|wear|similar|like this)\b/i.test(lowerMsg);
   const hasImage = opts?.imageUrl && isValidImageUrl(opts.imageUrl);
   
+  // SKIP RAG if user is just confirming - they already saw products
+  const shouldDoRAG = !isLikelyConfirming && (isProductQuery || hasImage);
+  
   // Image-based search: prioritize visual similarity
-  if (hasImage) {
+  if (shouldDoRAG && hasImage) {
     try {
       logger.info({ userId, imageUrl: opts.imageUrl?.slice(0, 100) }, '🖼️ RAG: Image-based product search');
       
@@ -180,7 +232,7 @@ export async function handleConversation(
     }
   } 
   // Text-based search: use query text
-  else if (isProductQuery && msg.length > 0) {
+  else if (shouldDoRAG && isProductQuery && msg.length > 0) {
     try {
       logger.info({ userId, query: msg }, '🔍 RAG: Text-based product search');
       allProducts = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
@@ -201,6 +253,18 @@ export async function handleConversation(
     }
   }
   
+  // Store products when we retrieve them (for use in confirmations later)
+  if (allProducts && allProducts.length > 0) {
+    const productsToStore = allProducts.slice(0, 5).map(p => ({
+      id: p.id,
+      name: p.name,
+      price: p.price || 0,
+      similarity: p.similarity
+    }));
+    await updateLead(userId, { lastShownProducts: productsToStore });
+    logger.info({ userId, productCount: productsToStore.length }, '💾 Stored last shown products for future confirmation');
+  }
+  
   // Generate AI response with product context
   // For image searches, add context to the message
   const contextualMessage = hasImage && allProducts && allProducts.length > 0
@@ -211,18 +275,26 @@ export async function handleConversation(
   
   // IMPORTANT: Only create order when user CONFIRMS a specific product, not just says "buy"
   // Check for explicit confirmation: "I'll take it", "I want this one", "yes I'll buy this"
-  const confirmKeywords = ['i\'ll take', 'i will take', 'i want this', 'i want that', 'buy this', 'buy that', 'yes', 'confirm'];
-  const isConfirmingOrder = confirmKeywords.some(keyword => lowerMsg.includes(keyword)) && 
-                            allProducts && allProducts.length > 0 && 
+  // When confirming, use lastShownProducts instead of doing new RAG search
+  const productsForOrder = allProducts || lead.lastShownProducts?.map(p => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    similarity: p.similarity || 0
+  }));
+  
+  const isConfirmingOrder = isLikelyConfirming && 
+                            productsForOrder && productsForOrder.length > 0 && 
                             lowerMsg.length < 100; // Short confirmations only
   
   // Only create order if:
   // 1. User is confirming (not just browsing)
   // 2. Products are available
   // 3. User info is collected
-  if (isConfirmingOrder && allProducts && allProducts.length > 0 && lead.name && lead.phone && lead.address) {
-    // Extract order items from AI response and products
-    const orderItems = allProducts.slice(0, 2).map(product => ({
+  if (isConfirmingOrder && productsForOrder && productsForOrder.length > 0 && lead.name && lead.phone && lead.address) {
+    // IMPORTANT: Only order the TOP 1 product that the user just looked at
+    // User is confirming "this" product from their previous query, not multiple products
+    const orderItems = productsForOrder.slice(0, 1).map(product => ({  // ✅ ONLY TOP 1 PRODUCT
       productId: product.id,
       productName: product.name,
       quantity: 1, // Default quantity, could be extracted from message
@@ -230,6 +302,16 @@ export async function handleConversation(
     }));
 
     const total = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+    logger.info(
+      { 
+        userId, 
+        selectedProduct: orderItems[0]?.productName,
+        price: orderItems[0]?.price,
+        total 
+      }, 
+      '🛒 Creating pending order for TOP product match'
+    );
 
     // Save pending order
     await updateLead(userId, {
@@ -251,22 +333,39 @@ export async function handleConversation(
     return { text: confirmMsg };
   }
   
-  // IMPORTANT: Filter products based on what AI actually mentioned in response
-  // This prevents showing irrelevant products (e.g., shoes when AI recommends pants)
+  // IMPORTANT: Determine how many products to show based on query type
   if (allProducts && allProducts.length > 0) {
+    // Check if user is asking for recommendations or browsing multiple options
+    const isAskingForOptions = /\b(recommend|show|what.*have|options|choices|all|any)\b/i.test(lowerMsg);
+    const isGeneralQuery = lowerMsg.split(' ').length <= 3; // Short queries like "shoes", "blue sneakers"
+    
+    let maxProducts = 2; // Default
+    
+    if (hasImage) {
+      // Image search: show top 1 match
+      maxProducts = 1;
+    } else if (isAskingForOptions || isGeneralQuery) {
+      // User wants to see options: show 4-5 products
+      maxProducts = Math.min(allProducts.length, 5);
+    } else {
+      // Specific query: show 2-3 products
+      maxProducts = Math.min(allProducts.length, 3);
+    }
+    
     if (shouldShowCarousel(reply, allProducts)) {
-      // For image search: show ONLY the top 1 match
-      // For text search: show up to 2 products
-      const maxProducts = hasImage ? 1 : 2;
-      
       productsToDisplay = getProductsForCarousel(reply, allProducts, maxProducts, 0.3);
       
       if (productsToDisplay.length === 0) {
         logger.info({ userId }, '📊 No products matched AI recommendation, skipping carousel');
       } else {
         logger.info(
-          { userId, displayCount: productsToDisplay.length, searchType: hasImage ? 'image' : 'text' },
-          `✅ Showing ${productsToDisplay.length} product(s) in carousel`
+          { 
+            userId, 
+            displayCount: productsToDisplay.length, 
+            maxProducts,
+            searchType: hasImage ? 'image' : isAskingForOptions ? 'options' : 'text' 
+          },
+          `✅ Showing ${productsToDisplay.length}/${allProducts.length} product(s) in carousel`
         );
       }
     } else {

@@ -85,7 +85,7 @@ export async function findOrCreateCustomer(
 }
 
 /**
- * Create order with items
+ * Create order with items (with retry logic)
  */
 export async function createOrder(
   customerId: string,
@@ -94,8 +94,23 @@ export async function createOrder(
 ): Promise<Order> {
   const tenantId = env.PRODUCT_TENANT_ID;
 
+  if (!tenantId) {
+    logger.error({ customerId }, '❌ PRODUCT_TENANT_ID not configured');
+    throw new Error('System configuration error');
+  }
+
+  if (!items || items.length === 0) {
+    logger.error({ customerId }, '❌ No items provided for order');
+    throw new Error('Cannot create order without items');
+  }
+
   // Calculate total
   const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  logger.info(
+    { customerId, itemCount: items.length, total, tenantId },
+    '📝 Creating order...'
+  );
 
   // Create order
   const { data: order, error: orderError } = await supabase
@@ -110,10 +125,17 @@ export async function createOrder(
     .select()
     .single();
 
-  if (orderError) {
-    logger.error({ error: orderError, customerId }, '❌ Failed to create order');
-    throw new Error('Failed to create order');
+  if (orderError || !order) {
+    logger.error({ 
+      error: orderError, 
+      errorDetails: JSON.stringify(orderError),
+      customerId, 
+      tenantId 
+    }, '❌ Failed to create order in database');
+    throw new Error(`Failed to create order: ${orderError?.message || 'Unknown error'}`);
   }
+
+  logger.info({ orderId: order.id, customerId }, '✅ Order record created');
 
   // Create order items
   const orderItems = items.map((item) => ({
@@ -124,20 +146,38 @@ export async function createOrder(
     tenant_id: tenantId
   }));
 
-  const { error: itemsError } = await supabase
+  const { data: createdItems, error: itemsError } = await supabase
     .from('order_items')
-    .insert(orderItems);
+    .insert(orderItems)
+    .select();
 
   if (itemsError) {
-    logger.error({ error: itemsError, orderId: order.id }, '❌ Failed to create order items');
+    logger.error({ 
+      error: itemsError, 
+      errorDetails: JSON.stringify(itemsError),
+      orderId: order.id 
+    }, '❌ Failed to create order items');
+    
     // Rollback order
-    await supabase.from('orders').delete().eq('id', order.id);
-    throw new Error('Failed to create order items');
+    logger.warn({ orderId: order.id }, '🔄 Rolling back order...');
+    const { error: deleteError } = await supabase.from('orders').delete().eq('id', order.id);
+    
+    if (deleteError) {
+      logger.error({ error: deleteError, orderId: order.id }, '❌ Failed to rollback order!');
+    }
+    
+    throw new Error(`Failed to create order items: ${itemsError?.message || 'Unknown error'}`);
   }
 
   logger.info(
-    { orderId: order.id, customerId, itemCount: items.length, total },
-    '✅ Order created successfully'
+    { 
+      orderId: order.id, 
+      customerId, 
+      itemCount: createdItems?.length || 0, 
+      total,
+      status: order.status
+    },
+    '✅ ORDER SAVED SUCCESSFULLY'
   );
 
   return {
