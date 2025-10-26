@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import express, { type Request, type Response } from 'express';
+import path from 'path';
 import { sendSenderAction, sendTextMessage, sendProductCarousel } from './social/facebook';
 import { handleConversation } from './conversation';
 import helmet from 'helmet';
@@ -17,6 +18,10 @@ const app = express();
 // Security and performance middleware
 app.use(helmet());
 app.use(compression());
+
+// Serve static assets from the public directory
+const publicDir = path.resolve(__dirname, '..', 'public');
+app.use(express.static(publicDir));
 
 // Capture raw body for signature verification with bounded size
 app.use(express.json({
@@ -114,7 +119,7 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
 });
 
 app.get('/', (_req, res) => {
-  res.status(200).send('Messenger bot is running');
+  res.sendFile(path.join(publicDir, 'index.html'));
 });
 
 app.get('/healthz', async (_req, res) => {

@@ -44,7 +44,7 @@ export async function sendProductCarousel(pageAccessToken: string, recipientPsid
       productCount: products.length,
       products: products.map((p) => ({ id: p.id, name: p.name, price: p.price, image_url: p.image_url }))
     },
-    '📤 Messenger: Sending product carousel'
+    'Messenger: Sending product carousel'
   );
 
   const elements = products.slice(0, 10).map((p) => {
@@ -87,10 +87,10 @@ export async function sendProductCarousel(pageAccessToken: string, recipientPsid
     }
   };
 
-  logger.info({ recipientPsid, cardCount: elements.length, sampleElement: elements[0] }, '🔍 Messenger: Carousel payload');
+  logger.info({ recipientPsid, cardCount: elements.length, sampleElement: elements[0] }, 'Messenger: Carousel payload');
 
   await graph.post('/me/messages', payload, { params: buildParams(pageAccessToken) });
-  logger.info({ recipientPsid, cardCount: elements.length }, '✅ Messenger: Carousel sent');
+  logger.info({ recipientPsid, cardCount: elements.length }, 'Messenger: Carousel sent');
 }
 
 

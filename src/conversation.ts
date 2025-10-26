@@ -1,7 +1,7 @@
 import { getPrompts, confirmOrderPrompt, orderConfirmedPrompt } from './prompts';
 import { getOrCreateLead, updateLead } from './services/leads-supabase';
 import { saveAssistantMessage, saveUserMessage } from './services/history-supabase';
-import { detectLanguage, type Language } from './utils';
+import { detectLanguage } from './utils';
 import { generateAiReplyWithHistory, refreshThreadSummary } from './ai';
 import { normalizePhone } from './services/phone';
 import { retrieveSimilarContext, retrieveSimilarContextByImage, type RetrievedProduct } from './services/rag';
@@ -205,7 +205,18 @@ export async function handleConversation(
   // Image-based search: prioritize visual similarity
   if (shouldDoRAG && hasImage) {
     try {
-      logger.info({ userId, imageUrl: opts.imageUrl?.slice(0, 100) }, '🖼️ RAG: Image-based product search');
+      const hasQuestion = msg.length > 0;
+      logger.info(
+        { 
+          userId, 
+          imageUrl: opts.imageUrl?.slice(0, 100),
+          hasQuestion,
+          question: hasQuestion ? msg.slice(0, 100) : undefined
+        }, 
+        hasQuestion 
+          ? '🖼️+💬 RAG: Image search WITH user question' 
+          : '🖼️ RAG: Image-only search'
+      );
       
       // Download and convert image to base64
       const imageBase64 = await downloadImageAsBase64(opts.imageUrl!, env.PAGE_ACCESS_TOKEN);
@@ -219,18 +230,21 @@ export async function handleConversation(
             userId,
             retrieved: allProducts.length,
             topMatch: allProducts[0]?.name,
-            topSimilarity: allProducts[0]?.similarity
+            topSimilarity: allProducts[0]?.similarity,
+            userQuestion: hasQuestion ? msg.slice(0, 50) : 'none'
           },
-          '✅ RAG: Products retrieved by image (will show top 1 only)'
+          hasQuestion
+            ? 'RAG: Products found by image + user can ask specific questions'
+            : 'RAG: Products retrieved by image'
         );
       } else {
-        logger.info({ userId }, '⚠️ RAG: No products found for image');
+        logger.info({ userId }, 'RAG: No products found for image');
       }
     } catch (err: any) {
-      logger.error({ userId, error: err.message }, '❌ RAG: Image-based retrieval failed');
+      logger.error({ userId, error: err.message }, 'RAG: Image-based retrieval failed');
       // Fallback to text-based search if available
       if (isProductQuery && msg.length > 0) {
-        logger.info({ userId }, '🔄 Falling back to text-based search');
+        logger.info({ userId }, 'Falling back to text-based search');
         try {
           // Let RAG service decide count dynamically based on query type
           allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
@@ -241,7 +255,7 @@ export async function handleConversation(
   // Text-based search: use query text
   else if (shouldDoRAG && isProductQuery && msg.length > 0) {
     try {
-      logger.info({ userId, query: msg }, '🔍 RAG: Text-based product search');
+      logger.info({ userId, query: msg }, 'RAG: Text-based product search');
       // Let RAG service decide count dynamically (10 for "show/recommend", 5 for specific)
       allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
       
@@ -253,11 +267,11 @@ export async function handleConversation(
             topMatch: allProducts[0]?.name,
             topSimilarity: allProducts[0]?.similarity
           },
-          '✅ RAG: Products retrieved by text'
+          'RAG: Products retrieved by text'
         );
       }
     } catch (err: any) {
-      logger.error({ userId, error: err.message }, '❌ RAG: Text-based retrieval failed');
+      logger.error({ userId, error: err.message }, 'RAG: Text-based retrieval failed');
     }
   }
   
@@ -275,9 +289,19 @@ export async function handleConversation(
   
   // Generate AI response with product context
   // For image searches, add context to the message
-  const contextualMessage = hasImage && allProducts && allProducts.length > 0
-    ? `[User sent an image] ${msg || 'Looking for products similar to this image'}`
-    : msg;
+  let contextualMessage = msg;
+  
+  if (hasImage && allProducts && allProducts.length > 0) {
+    if (msg && msg.length > 0) {
+      // User sent image WITH a question - pass both context and question to AI
+      contextualMessage = `[User sent an image and asked: "${msg}"]`;
+      logger.info({ userId, userQuestion: msg.slice(0, 100) }, '💬 AI will answer specific question about image results');
+    } else {
+      // User sent image WITHOUT text - generic similar product search
+      contextualMessage = '[User sent an image] Looking for products similar to this image';
+      logger.info({ userId }, '🖼️ AI will describe similar products found');
+    }
+  }
   
   // Get AI reply with detected language
   const { reply, language: aiLanguage } = await generateAiReplyWithHistory(userId, contextualMessage, lead, allProducts);

@@ -57,18 +57,6 @@ export function extractMentionedProducts(aiResponse: string, availableProducts: 
   return mentioned;
 }
 
-/**
- * Smart product filtering for carousel display
- * Strategy:
- * 1. Show only products mentioned by AI in the response
- * 2. If none mentioned, show top 2 most relevant
- * 3. Filter by similarity threshold
- * 
- * @param aiResponse The AI's text response
- * @param allProducts All retrieved products from RAG
- * @param maxDisplay Maximum products to show (default: 2)
- * @param minSimilarity Minimum similarity threshold (default: 0.3)
- */
 export function getProductsForCarousel(
   aiResponse: string,
   allProducts: RetrievedProduct[],
@@ -95,7 +83,7 @@ export function getProductsForCarousel(
         displayed: filtered.length,
         products: filtered.map(p => ({ name: p.name, similarity: p.similarity?.toFixed(3) }))
       },
-      '✅ Carousel: Showing AI-mentioned products'
+      'Carousel: Showing AI-mentioned products'
     );
     
     return filtered;
