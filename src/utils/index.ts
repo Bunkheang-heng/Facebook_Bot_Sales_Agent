@@ -32,4 +32,9 @@ export {
   stripMarkdown,
   cleanAIResponse
 } from './formatting';
+export {
+  detectLanguage,
+  getPreferredLanguage,
+  type Language
+} from './language';
 

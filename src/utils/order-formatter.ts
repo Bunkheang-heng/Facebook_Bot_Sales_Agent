@@ -66,9 +66,9 @@ export function extractOrderIntent(message: string): {
   
   let match;
   while ((match = quantityPattern.exec(message)) !== null) {
-    const qty = parseInt(match[1], 10);
-    const productHint = match[2].trim();
-    if (qty > 0) {
+    const qty = parseInt(match[1] || '0', 10);
+    const productHint = match[2]?.trim();
+    if (qty > 0 && productHint) {
       quantities[productHint] = qty;
     }
   }

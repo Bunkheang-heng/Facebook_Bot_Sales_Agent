@@ -1,11 +1,11 @@
 import OpenAI from 'openai';
-import { systemPrompt } from './prompts';
+import { getSystemPrompt } from './prompts';
 import { buildRagContext, retrieveSimilarContext } from './services/rag';
 import { getChatHistory, getConversationSummary, updateConversationSummary } from './services/history-supabase';
 import type { LeadDoc } from './services/leads-supabase';
 import { logger } from './logger';
 import { clampText } from './utils/text';
-import { cleanAIResponse } from './utils/formatting';
+import { cleanAIResponse, detectLanguage } from './utils';
 
 let openaiClient: OpenAI | null = null;
 
@@ -20,28 +20,31 @@ function getOpenAI(): OpenAI {
   return openaiClient;
 }
 
-export async function generateAiReply(userMessageText: string): Promise<string> {
+export async function generateAiReply(userMessageText: string): Promise<{ reply: string; language: 'km' | 'en' }> {
   const safeUser = clampText(userMessageText, 800);
+  const language = detectLanguage(userMessageText);
 
   const completion = await getOpenAI().chat.completions.create({
     model: 'gpt-4o-mini',
-    temperature: 0.3,
-    max_tokens: 300,
+    temperature: 0.7,
+    max_completion_tokens: 300,
     messages: [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: getSystemPrompt(language) },
       { role: 'user', content: safeUser }
     ]
   });
 
   const content = completion.choices?.[0]?.message?.content?.trim();
   // Clamp output as well to prevent excessive message size
-  const response = content && content.length > 0
-    ? content
+  const fallback = language === 'km' 
+    ? "ខ្ញុំត្រៀមខ្លួនរួចហើយដើម្បីជួយអ្នក! តើអ្នកអាចសួរម្តងទៀតបានទេ?"
     : "I'm here and ready to help! Could you rephrase your question?";
+    
+  const response = content && content.length > 0 ? content : fallback;
   
   // Clean markdown formatting that Messenger doesn't support
   const cleaned = cleanAIResponse(response);
-  return clampText(cleaned, 800);
+  return { reply: clampText(cleaned, 800), language };
 }
 
 // History-aware generation with lead-context injection
@@ -50,13 +53,16 @@ export async function generateAiReplyWithHistory(
   userMessageText: string,
   lead?: LeadDoc,
   preRetrievedProducts?: any[] // Avoid duplicate RAG calls
-): Promise<string> {
+): Promise<{ reply: string; language: 'km' | 'en' }> {
   logger.info({ userId, query: userMessageText.slice(0, 100) }, '🤖 AI: Starting context-aware reply generation');
 
   const [recent, summary] = await Promise.all([
     getChatHistory(userId, 8),
     getConversationSummary(userId)
   ]);
+  
+  // Detect language from current message (prioritize current over history)
+  const language = detectLanguage(userMessageText);
   
   // Use pre-retrieved products if available, otherwise fetch
   const retrieved = preRetrievedProducts ?? await retrieveSimilarContext(userMessageText).catch(() => []);
@@ -74,7 +80,7 @@ export async function generateAiReplyWithHistory(
 
   const ragBlock = buildRagContext(retrieved as any);
   const contextPreamble = [
-    systemPrompt,
+    getSystemPrompt(language),  // Language-aware system prompt
     leadFacts ? `Known customer details:\n${leadFacts}` : null,
     summary ? `Conversation summary:\n${summary}` : null,
     ragBlock ? ragBlock : null
@@ -112,7 +118,10 @@ export async function generateAiReplyWithHistory(
   });
 
   const content = completion.choices?.[0]?.message?.content?.trim();
-  const response = content && content.length > 0 ? content : 'Sure—how can I help further?';
+  const fallback = language === 'km' 
+    ? "ពិតណាស់ — តើខ្ញុំអាចជួយអ្វីបានទៀត?"
+    : 'Sure—how can I help further?';
+  const response = content && content.length > 0 ? content : fallback;
   
   // Clean markdown formatting that Messenger doesn't support
   const cleaned = cleanAIResponse(response);
@@ -120,13 +129,14 @@ export async function generateAiReplyWithHistory(
   logger.info(
     {
       userId,
+      language,
       responseLength: cleaned.length,
       tokensUsed: completion.usage?.total_tokens
     },
     '✅ AI: Reply generated'
   );
 
-  return clampText(cleaned, 800);
+  return { reply: clampText(cleaned, 800), language };
 }
 
 // Optional: summarize long threads to reduce tokens

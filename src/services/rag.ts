@@ -7,6 +7,8 @@ export type RetrievedProduct = {
   id: string;
   name: string;
   description: string | null;
+  category: string | null;
+  size: string | null;
   price: number | null;
   image_url: string | null;
   similarity: number;
@@ -149,12 +151,17 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
     rpcParams.filter_tenant_id = env.PRODUCT_TENANT_ID;
   }
 
+  // Parallel search with DIFFERENT thresholds (matching Next.js implementation)
   const [{ data: hybrid, error: e1 }, { data: vec, error: e2 }] = await Promise.all([
-    supabase.rpc(env.SUPABASE_MATCH_TEXT_FN, rpcParams),
+    supabase.rpc(env.SUPABASE_MATCH_TEXT_FN, {
+      ...rpcParams,
+      match_threshold: 0.2,  // Lenient for hybrid search
+      match_count: 10  // Fetch 10 from each method
+    }),
     supabase.rpc(env.SUPABASE_MATCH_EMBEDDING_FN, {
       query_embedding: queryEmbedding,
-      match_threshold: matchThreshold,
-      match_count: matchCount,
+      match_threshold: 0.3,  // Slightly stricter for vector-only
+      match_count: 10,  // Fetch 10 from each method
       ...(env.PRODUCT_TENANT_ID ? { filter_tenant_id: env.PRODUCT_TENANT_ID } : {})
     })
   ]);
@@ -173,6 +180,7 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
     '📊 Supabase: Search results received'
   );
 
+  // Merge and deduplicate: keep highest similarity per product ID
   const merged = [...(hybrid ?? []), ...(vec ?? [])];
   const byId = new Map<string, any>();
   for (const item of merged) {
@@ -180,9 +188,11 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
     const prev = byId.get(item.id);
     if (!prev || (item.similarity ?? 0) > (prev.similarity ?? 0)) byId.set(item.id, item);
   }
+  
+  // Sort by similarity desc, take top N (matchCount from opts, or defaultCount based on query)
   const rows = Array.from(byId.values())
     .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-    .slice(0, matchCount);
+    .slice(0, matchCount);  // This respects the dynamic count from opts or query analysis
 
   logger.info(
     {
@@ -199,6 +209,8 @@ export async function retrieveSimilarContext(queryText: string, opts?: { matchCo
     description: r.description ?? null,
     price: r.price == null ? null : Number(r.price),
     image_url: r.image_url ?? null,
+    category: r.category ?? null,
+    size: r.size ?? null,
     similarity: Number(r.similarity ?? 0)
   }));
 
@@ -295,6 +307,8 @@ export async function retrieveSimilarContextByImage(
     description: r.description ?? null,
     price: r.price == null ? null : Number(r.price),
     image_url: r.image_url ?? null,
+    category: r.category ?? null,
+    size: r.size ?? null,
     similarity: Number(r.similarity ?? 0)
   }));
 
@@ -329,10 +343,12 @@ export function buildRagContext(products: RetrievedProduct[], maxChars = 2000): 
     .sort((a, b) => b.similarity - a.similarity)
     .map((p, idx) => {
       const price = p.price == null ? '' : `\nPrice: $${p.price}`;
+      const category = p.category ? `\nCategory: ${p.category}` : '';
+      const size = p.size ? `\nSize: ${p.size}` : '';
       const img = p.image_url ? `\nImage: ${p.image_url}` : '';
       const desc = (p.description ?? '').toString().trim();
       const descSnippet = desc.length > 500 ? desc.slice(0, 500) + '…' : desc;
-      return `#${idx + 1} (sim=${p.similarity.toFixed(3)})\nName: ${p.name}${price}${img}\nDescription: ${descSnippet}`;
+      return `#${idx + 1} (sim=${p.similarity.toFixed(3)})\nName: ${p.name}${price}${category}${size}${img}\nDescription: ${descSnippet}`;
     })
     .join('\n\n');
   const text = (header + body).slice(0, maxChars);

@@ -1,6 +1,7 @@
-import { prompts, confirmOrderPrompt, orderConfirmedPrompt } from './prompts';
+import { getPrompts, confirmOrderPrompt, orderConfirmedPrompt } from './prompts';
 import { getOrCreateLead, updateLead } from './services/leads-supabase';
 import { saveAssistantMessage, saveUserMessage } from './services/history-supabase';
+import { detectLanguage, type Language } from './utils';
 import { generateAiReplyWithHistory, refreshThreadSummary } from './ai';
 import { normalizePhone } from './services/phone';
 import { retrieveSimilarContext, retrieveSimilarContextByImage, type RetrievedProduct } from './services/rag';
@@ -23,6 +24,11 @@ export async function handleConversation(
   opts?: ConversationOptions
 ): Promise<ConversationResponse> {
   const msg = userMessageText.trim();
+  
+  // Detect language from user message
+  const language = detectLanguage(msg);
+  const prompts = getPrompts(language);
+  
   const leadPromise = getOrCreateLead(userId);
   const saveUserPromise = saveUserMessage(userId, msg, opts?.mid);
   const lead = await leadPromise;
@@ -134,8 +140,8 @@ export async function handleConversation(
         });
         logger.info({ userId }, '✅ Lead updated');
 
-        // Step 5: Send confirmation
-        const confirmMsg = orderConfirmedPrompt(order.id, order.total);
+        // Step 5: Send confirmation (using detected language)
+        const confirmMsg = orderConfirmedPrompt(order.id, order.total, language);
         await saveAssistantMessage(userId, confirmMsg);
         
         logger.info(
@@ -204,7 +210,7 @@ export async function handleConversation(
       // Download and convert image to base64
       const imageBase64 = await downloadImageAsBase64(opts.imageUrl!, env.PAGE_ACCESS_TOKEN);
       
-      // Search by image - retrieve 5 for AI context, but will show only top 1
+      // Search by image - image search is very specific, so limit to top 5 matches
       allProducts = await retrieveSimilarContextByImage(imageBase64, { matchCount: 5, minSimilarity: 0 });
       
       if (allProducts && allProducts.length > 0) {
@@ -226,7 +232,8 @@ export async function handleConversation(
       if (isProductQuery && msg.length > 0) {
         logger.info({ userId }, '🔄 Falling back to text-based search');
         try {
-          allProducts = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
+          // Let RAG service decide count dynamically based on query type
+          allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
         } catch {}
       }
     }
@@ -235,7 +242,8 @@ export async function handleConversation(
   else if (shouldDoRAG && isProductQuery && msg.length > 0) {
     try {
       logger.info({ userId, query: msg }, '🔍 RAG: Text-based product search');
-      allProducts = await retrieveSimilarContext(msg, { matchCount: 5, minSimilarity: 0 });
+      // Let RAG service decide count dynamically (10 for "show/recommend", 5 for specific)
+      allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
       
       if (allProducts && allProducts.length > 0) {
         logger.info(
@@ -271,7 +279,11 @@ export async function handleConversation(
     ? `[User sent an image] ${msg || 'Looking for products similar to this image'}`
     : msg;
   
-  const reply = await generateAiReplyWithHistory(userId, contextualMessage, lead, allProducts);
+  // Get AI reply with detected language
+  const { reply, language: aiLanguage } = await generateAiReplyWithHistory(userId, contextualMessage, lead, allProducts);
+  
+  // Use AI's language for order prompts (more reliable than initial detection)
+  const orderLanguage = aiLanguage;
   
   // IMPORTANT: Only create order when user CONFIRMS a specific product, not just says "buy"
   // Check for explicit confirmation: "I'll take it", "I want this one", "yes I'll buy this"
@@ -325,7 +337,8 @@ export async function handleConversation(
         qty: item.quantity,
         price: item.price
       })),
-      total
+      total,
+      orderLanguage
     );
 
     logger.info({ userId, orderItems, total }, '🛒 Pending order created, awaiting confirmation');
