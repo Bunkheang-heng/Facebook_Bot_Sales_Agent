@@ -6,6 +6,7 @@ export class RateLimiter {
   private buckets: Map<string, RateBucket>;
   private windowMs: number;
   private maxEvents: number;
+  private bursts: Map<string, number> = new Map();
 
   constructor(windowMs: number = 30_000, maxEvents: number = 4) {
     this.buckets = new Map();
@@ -37,6 +38,18 @@ export class RateLimiter {
   }
 
   /**
+   * Simple anomaly score: number of times a user hit the limiter within the window.
+   */
+  recordAnomaly(userId: string): void {
+    const score = (this.bursts.get(userId) || 0) + 1;
+    this.bursts.set(userId, score);
+  }
+
+  getAnomalyScore(userId: string): number {
+    return this.bursts.get(userId) || 0;
+  }
+
+  /**
    * Clean up expired rate limit buckets to prevent memory leaks
    * @returns number of cleaned buckets
    */
@@ -50,6 +63,9 @@ export class RateLimiter {
         cleaned++;
       }
     }
+
+    // reset anomaly scores each cleanup pass
+    this.bursts.clear();
 
     if (cleaned > 0) {
       logger.debug({ cleaned }, 'Cleaned expired rate limit buckets');

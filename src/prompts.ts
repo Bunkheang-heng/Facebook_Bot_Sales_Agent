@@ -1,4 +1,4 @@
-import { Language } from './utils/language';
+import { Language } from './types/domain';
 
 export function getSystemPrompt(language: Language = 'en'): string {
   if (language === 'km') {
@@ -77,7 +77,15 @@ RULES:
 
 
 // Bilingual prompts (English and Khmer)
-export const prompts = {
+export const prompts: Record<Language, {
+  askItem: string;
+  askName: string;
+  askPhone: string;
+  askEmail: string;
+  askAddress: string;
+  done: string;
+  orderCancelled: string;
+}> = {
   en: {
     askItem: 'What product are you looking for today? 💬\n\nYou can:\n- Send a photo to find similar items\n- Send a photo WITH your question (e.g., "Do you have this in blue?")',
     askName: 'Perfect! To complete your order, I\'ll need some information.\n\nWhat\'s your full name?',

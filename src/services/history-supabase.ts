@@ -1,24 +1,9 @@
 import { supabase } from '../supabase';
 import { env } from '../config';
 import { logger } from '../logger';
+import { ChatMessage } from '../types/domain';
 
-export type ChatMessage = {
-  id?: string;
-  userId: string;
-  role: 'user' | 'assistant';
-  content: string;
-  messageId?: string;
-  createdAt?: string;
-};
-
-/**
- * Save user message to Supabase
- */
-export async function saveUserMessage(
-  userId: string,
-  content: string,
-  messageId?: string
-): Promise<void> {
+export async function saveUserMessage(userId: string, content: string, messageId?: string): Promise<void> {
   const tenantId = env.PRODUCT_TENANT_ID;
 
   const { error } = await supabase
@@ -32,14 +17,10 @@ export async function saveUserMessage(
     });
 
   if (error) {
-    logger.error({ error, userId }, '❌ Failed to save user message');
-    // Don't throw - chat history is not critical
+    logger.error({ error, userId }, 'Failed to save user message');
   }
 }
 
-/**
- * Save assistant message to Supabase
- */
 export async function saveAssistantMessage(
   userId: string,
   content: string,
@@ -58,14 +39,10 @@ export async function saveAssistantMessage(
     });
 
   if (error) {
-    logger.error({ error, userId }, '❌ Failed to save assistant message');
-    // Don't throw - chat history is not critical
+    logger.error({ error, userId }, 'Failed to save assistant message');
   }
 }
 
-/**
- * Get chat history for a user (most recent first)
- */
 export async function getChatHistory(
   userId: string,
   limit: number = 20
@@ -81,7 +58,7 @@ export async function getChatHistory(
     .limit(limit);
 
   if (error) {
-    logger.error({ error, userId }, '❌ Failed to fetch chat history');
+    logger.error({ error, userId }, 'Failed to fetch chat history');
     return [];
   }
 
@@ -95,9 +72,6 @@ export async function getChatHistory(
   }));
 }
 
-/**
- * Get conversation summary for a user
- */
 export async function getConversationSummary(userId: string): Promise<string | null> {
   const tenantId = env.PRODUCT_TENANT_ID;
 
@@ -115,9 +89,6 @@ export async function getConversationSummary(userId: string): Promise<string | n
   return data.summary;
 }
 
-/**
- * Update conversation summary
- */
 export async function updateConversationSummary(
   userId: string,
   summary: string,
@@ -137,7 +108,7 @@ export async function updateConversationSummary(
     });
 
   if (error) {
-    logger.error({ error, userId }, '❌ Failed to update conversation summary');
+    logger.error({ error, userId }, 'Failed to update conversation summary');
   }
 }
 

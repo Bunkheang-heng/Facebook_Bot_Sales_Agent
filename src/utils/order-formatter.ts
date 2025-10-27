@@ -1,8 +1,3 @@
-import { type Order, type OrderItem } from '../services/orders';
-
-/**
- * Format order summary for Facebook Messenger
- */
 export function formatOrderSummary(
   customerName: string,
   items: Array<{ name: string; quantity: number; price: number }>,

@@ -37,13 +37,16 @@ export async function sendTextMessage(pageAccessToken: string, recipientPsid: st
 
 export async function sendProductCarousel(pageAccessToken: string, recipientPsid: string, products: RetrievedProduct[]): Promise<void> {
   if (!products || products.length === 0) return;
+
+  const info = {
+    recipientPsid,
+    productCount: products.length,
+    products: products.map((p) => ({ id: p.id, name: p.name, price: p.price, image_url: p.image_url }))
+  }
+
+  console.log(info); 
   
   logger.info(
-    {
-      recipientPsid,
-      productCount: products.length,
-      products: products.map((p) => ({ id: p.id, name: p.name, price: p.price, image_url: p.image_url }))
-    },
     'Messenger: Sending product carousel'
   );
 
@@ -87,7 +90,8 @@ export async function sendProductCarousel(pageAccessToken: string, recipientPsid
     }
   };
 
-  logger.info({ recipientPsid, cardCount: elements.length, sampleElement: elements[0] }, 'Messenger: Carousel payload');
+  console.log('payload', payload);
+
 
   await graph.post('/me/messages', payload, { params: buildParams(pageAccessToken) });
   logger.info({ recipientPsid, cardCount: elements.length }, 'Messenger: Carousel sent');

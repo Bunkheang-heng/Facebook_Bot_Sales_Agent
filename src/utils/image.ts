@@ -8,7 +8,7 @@ import { logger } from '../logger';
  * @returns Base64 encoded image data
  */
 export async function downloadImageAsBase64(imageUrl: string, pageAccessToken?: string): Promise<string> {
-  logger.info({ imageUrl: imageUrl.slice(0, 100) }, '📥 Downloading image');
+  logger.info({ imageUrl: imageUrl.slice(0, 100) }, 'Downloading image');
 
   try {
     const headers: any = {};
@@ -33,7 +33,7 @@ export async function downloadImageAsBase64(imageUrl: string, pageAccessToken?: 
         sizeKB: Math.round(base64.length / 1024),
         contentType: response.headers['content-type']
       },
-      '✅ Image downloaded successfully'
+      'Image downloaded successfully'
     );
 
     return base64;

@@ -1,30 +1,9 @@
 import { supabase } from '../supabase';
 import { env } from '../config';
 import { logger } from '../logger';
+import { maskPhone } from '../utils/validators';
+import { Customer, Order } from '../types/domain';
 
-export type Customer = {
-  id: string;
-  name: string;
-  phone: string;
-  email?: string | null;
-  address?: string | null;
-};
-
-export type OrderItem = {
-  product_id: string;
-  product_name: string;
-  qty: number;
-  price: number;
-};
-
-export type Order = {
-  id: string;
-  customer_id: string;
-  date: string;
-  status: 'pending' | 'paid' | 'refunded';
-  total: number;
-  items: OrderItem[];
-};
 
 /**
  * Find or create customer in Supabase
@@ -46,7 +25,7 @@ export async function findOrCreateCustomer(
     .single();
 
   if (existing && !findError) {
-    logger.info({ customerId: existing.id, phone }, '✅ Customer found');
+    logger.info({ customerId: existing.id, phone: maskPhone(phone) }, 'Customer found');
     return {
       id: existing.id,
       name: existing.name,
@@ -70,11 +49,11 @@ export async function findOrCreateCustomer(
     .single();
 
   if (createError) {
-    logger.error({ error: createError, phone }, '❌ Failed to create customer');
+    logger.error({ error: createError, phone: maskPhone(phone) }, 'Failed to create customer');
     throw new Error('Failed to create customer');
   }
 
-  logger.info({ customerId: newCustomer.id, phone }, '✅ Customer created');
+  logger.info({ customerId: newCustomer.id, phone: maskPhone(phone) }, 'Customer created');
   return {
     id: newCustomer.id,
     name: newCustomer.name,
@@ -95,12 +74,12 @@ export async function createOrder(
   const tenantId = env.PRODUCT_TENANT_ID;
 
   if (!tenantId) {
-    logger.error({ customerId }, '❌ PRODUCT_TENANT_ID not configured');
+    logger.error({ customerId }, ' PRODUCT_TENANT_ID not configured');
     throw new Error('System configuration error');
   }
 
   if (!items || items.length === 0) {
-    logger.error({ customerId }, '❌ No items provided for order');
+    logger.error({ customerId }, ' No items provided for order');
     throw new Error('Cannot create order without items');
   }
 
@@ -131,11 +110,11 @@ export async function createOrder(
       errorDetails: JSON.stringify(orderError),
       customerId, 
       tenantId 
-    }, '❌ Failed to create order in database');
+    }, ' Failed to create order in database');
     throw new Error(`Failed to create order: ${orderError?.message || 'Unknown error'}`);
   }
 
-  logger.info({ orderId: order.id, customerId }, '✅ Order record created');
+  logger.info({ orderId: order.id, customerId }, ' Order record created');
 
   // Create order items
   const orderItems = items.map((item) => ({
@@ -156,14 +135,14 @@ export async function createOrder(
       error: itemsError, 
       errorDetails: JSON.stringify(itemsError),
       orderId: order.id 
-    }, '❌ Failed to create order items');
+    }, ' Failed to create order items');
     
     // Rollback order
     logger.warn({ orderId: order.id }, '🔄 Rolling back order...');
     const { error: deleteError } = await supabase.from('orders').delete().eq('id', order.id);
     
     if (deleteError) {
-      logger.error({ error: deleteError, orderId: order.id }, '❌ Failed to rollback order!');
+      logger.error({ error: deleteError, orderId: order.id }, ' Failed to rollback order!');
     }
     
     throw new Error(`Failed to create order items: ${itemsError?.message || 'Unknown error'}`);
@@ -177,7 +156,7 @@ export async function createOrder(
       total,
       status: order.status
     },
-    '✅ ORDER SAVED SUCCESSFULLY'
+    'ORDER SAVED SUCCESSFULLY'
   );
 
   return {
@@ -206,7 +185,7 @@ export async function getOrder(orderId: string): Promise<Order | null> {
     .single();
 
   if (orderError || !order) {
-    logger.error({ error: orderError, orderId }, '❌ Order not found');
+    logger.error({ error: orderError, orderId }, 'Order not found');
     return null;
   }
 
@@ -222,7 +201,7 @@ export async function getOrder(orderId: string): Promise<Order | null> {
     .eq('order_id', orderId);
 
   if (itemsError) {
-    logger.error({ error: itemsError, orderId }, '❌ Failed to fetch order items');
+    logger.error({ error: itemsError, orderId }, 'Failed to fetch order items');
     return null;
   }
 
@@ -254,11 +233,11 @@ export async function updateOrderStatus(
     .eq('id', orderId);
 
   if (error) {
-    logger.error({ error, orderId, status }, '❌ Failed to update order status');
+    logger.error({ error, orderId, status }, 'Failed to update order status');
     throw new Error('Failed to update order status');
   }
 
-  logger.info({ orderId, status }, '✅ Order status updated');
+  logger.info({ orderId, status }, ' Order status updated');
 }
 
 /**
@@ -272,6 +251,6 @@ export async function acceptOrder(orderId: string): Promise<void> {
     throw new Error(error.message || 'Failed to accept order');
   }
 
-  logger.info({ orderId }, '✅ Order accepted and stock decremented');
+  logger.info({ orderId }, 'Order accepted and stock decremented');
 }
 

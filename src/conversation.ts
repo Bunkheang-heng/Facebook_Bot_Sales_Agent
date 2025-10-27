@@ -10,6 +10,7 @@ import { getProductsForCarousel, shouldShowCarousel } from './utils/ai-product-m
 import { downloadImageAsBase64, isValidImageUrl } from './utils/image';
 import { env } from './config';
 import { findOrCreateCustomer, createOrder } from './services/orders';
+import { leadUpdateSchema, userMessageSchema, maskPhone, buildLeadUpdate } from './utils/validators';
 
 export type ConversationResponse = { text: string; products?: RetrievedProduct[] };
 
@@ -23,7 +24,9 @@ export async function handleConversation(
   userMessageText: string,
   opts?: ConversationOptions
 ): Promise<ConversationResponse> {
-  const msg = userMessageText.trim();
+  const msg = userMessageSchema.safeParse(userMessageText).success
+    ? userMessageText.trim()
+    : String(userMessageText || '').slice(0, 800).trim();
   
   // Detect language from user message
   const language = detectLanguage(msg);
@@ -48,13 +51,15 @@ export async function handleConversation(
     // Flow continues to general chat section below
   }
   if (lead.stage === 'ask_name') {
-    await updateLead(userId, { name: msg, stage: 'ask_phone' });
+    const validated = leadUpdateSchema.parse({ name: msg, stage: 'ask_phone' });
+    await updateLead(userId, buildLeadUpdate(validated));
     await saveAssistantMessage(userId, prompts.askPhone);
     return { text: prompts.askPhone };
   }
   if (lead.stage === 'ask_phone') {
     const norm = normalizePhone(msg, 'KH');
-    await updateLead(userId, { phone: norm.e164 ?? msg, stage: 'ask_email' });
+    const validated = leadUpdateSchema.parse({ phone: norm.e164 ?? msg, stage: 'ask_email' });
+    await updateLead(userId, buildLeadUpdate(validated));
     await saveAssistantMessage(userId, prompts.askEmail);
     return { text: prompts.askEmail };
   }
@@ -62,12 +67,14 @@ export async function handleConversation(
     // Email is optional - allow . to skip
     const skipEmail = msg.trim() === '.' || msg.toLowerCase().includes('skip');
     const email = skipEmail ? null : msg.trim();
-    await updateLead(userId, { email, stage: 'ask_address' });
+    const validated = leadUpdateSchema.parse({ email, stage: 'ask_address' });
+    await updateLead(userId, buildLeadUpdate(validated));
     await saveAssistantMessage(userId, prompts.askAddress);
     return { text: prompts.askAddress };
   }
   if (lead.stage === 'ask_address') {
-    await updateLead(userId, { address: msg, stage: 'completed' });
+    const validated = leadUpdateSchema.parse({ address: msg, stage: 'completed' });
+    await updateLead(userId, buildLeadUpdate(validated));
     await saveAssistantMessage(userId, prompts.done);
     return { text: prompts.done };
   }
@@ -89,7 +96,7 @@ export async function handleConversation(
         logger.info({ 
           userId, 
           customerName: lead.name,
-          customerPhone: lead.phone,
+          customerPhone: maskPhone(lead.phone),
           pendingOrder: lead.pendingOrder 
         }, '📦 Starting order creation process');
 
@@ -163,8 +170,8 @@ export async function handleConversation(
           stack: error.stack,
           leadData: {
             name: lead.name,
-            phone: lead.phone,
-            address: lead.address,
+            phone: maskPhone(lead.phone),
+            address: '[redacted]',
             hasPendingOrder: !!lead.pendingOrder
           }
         }, '❌❌❌ ORDER CREATION FAILED');

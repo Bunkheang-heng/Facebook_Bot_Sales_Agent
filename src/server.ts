@@ -12,6 +12,8 @@ import { logger } from './logger';
 import { RateLimiter } from './utils/rate-limiter';
 import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from './utils/webhook';
 import { clampText } from './utils/text';
+import { ReplayCache } from './utils/replay-cache';
+import { MAX_MESSAGE_CHARS, RATE_LIMIT_MAX_EVENTS, RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX, REPLAY_TTL_MS, MAX_EVENT_AGE_MS } from './security/constants';
 
 const app = express();
 
@@ -35,12 +37,12 @@ const PAGE_ACCESS_TOKEN = env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = env.VERIFY_TOKEN;
 const APP_SECRET = env.APP_SECRET;
 const PORT = env.PORT;
-const MAX_MESSAGE_CHARS = 800;
-const RATE_LIMIT_WINDOW_MS = 30_000; // 30s
-const RATE_LIMIT_MAX_EVENTS = 4; // per window per user
+// centralized in security/constants.ts
 
 // Initialize rate limiter
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS);
+const globalLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX);
+const replayCache = new ReplayCache(REPLAY_TTL_MS);
 
 if (!PAGE_ACCESS_TOKEN || !VERIFY_TOKEN || !APP_SECRET) {
   // Fail fast so misconfiguration is caught immediately
@@ -77,9 +79,28 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
     return res.sendStatus(404);
   }
 
+  // Basic global limiter
+  if (!globalLimiter.allowEvent('global')) {
+    logger.warn('Global rate limit exceeded, dropping batch');
+    return res.sendStatus(429);
+  }
+
   // Process each messaging event
   for (const event of events) {
     const { senderId, messageText, mid, imageUrl, hasImage } = event;
+
+    // Replay protection by message id
+    if (mid && replayCache.seen(mid)) {
+      logger.debug({ mid }, 'Replay detected: duplicate message id');
+      continue;
+    }
+
+    // Timestamp-based replay protection if entry time available
+    const entryTime = (body.entry && body.entry[0] && body.entry[0].time) ? Number(body.entry[0].time) : undefined;
+    if (entryTime && (Date.now() - entryTime) > MAX_EVENT_AGE_MS) {
+      logger.warn({ senderId }, 'Stale event rejected due to age check');
+      continue;
+    }
 
     // Apply rate limiting
     if (!rateLimiter.allowEvent(senderId)) {

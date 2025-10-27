@@ -1,17 +1,14 @@
-import { env } from '../src/config';
 import { logger } from '../src/logger';
-import { handleConversation } from '../src/conversation';
-import { sendSenderAction, sendTextMessage, sendProductCarousel } from '../src/social/facebook';
 import { RateLimiter } from '../src/utils/rate-limiter';
+import { ReplayCache } from '../src/utils/replay-cache';
 import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from '../src/utils/webhook';
 import { clampText } from '../src/utils/text';
+import { MAX_MESSAGE_CHARS, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS, GLOBAL_RATE_LIMIT_MAX, REPLAY_TTL_MS, MAX_EVENT_AGE_MS } from '../src/security/constants';
 
-const MAX_MESSAGE_CHARS = 800;
-const RATE_LIMIT_WINDOW_MS = 30_000;
-const RATE_LIMIT_MAX_EVENTS = 4;
-
-// Initialize rate limiter (persists across serverless invocations in warm container)
+// Initialize limiters and replay cache (warm containers preserve state for a while)
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS);
+const globalLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX);
+const replayCache = new ReplayCache(REPLAY_TTL_MS);
 
 async function readRawBody(req: any): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
@@ -23,9 +20,10 @@ async function readRawBody(req: any): Promise<Buffer> {
 }
 
 export default async function handler(req: any, res: any) {
-  const PAGE_ACCESS_TOKEN = env.PAGE_ACCESS_TOKEN;
-  const VERIFY_TOKEN = env.VERIFY_TOKEN;
-  const APP_SECRET = env.APP_SECRET;
+  // Read just what's needed without importing strict env parser
+  const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN as string | undefined;
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN as string | undefined;
+  const APP_SECRET = process.env.APP_SECRET as string | undefined;
 
   if (!PAGE_ACCESS_TOKEN || !VERIFY_TOKEN || !APP_SECRET) {
     logger.error('Server misconfigured');
@@ -39,7 +37,9 @@ export default async function handler(req: any, res: any) {
     const token = req.query?.['hub.verify_token'] as string | undefined;
     const challenge = req.query?.['hub.challenge'] as string | undefined;
     
-    const verificationResult = verifyWebhookChallenge(mode, token, challenge, VERIFY_TOKEN);
+    const verificationResult = VERIFY_TOKEN
+      ? verifyWebhookChallenge(mode, token, challenge, VERIFY_TOKEN)
+      : null;
     
     if (verificationResult) {
       res.statusCode = 200;
@@ -55,7 +55,7 @@ export default async function handler(req: any, res: any) {
     const rawBody = await readRawBody(req);
     const signatureHeader = req.headers?.['x-hub-signature-256'] as string | undefined;
     
-    if (!verifyWebhookSignature(rawBody, signatureHeader, APP_SECRET)) {
+    if (!APP_SECRET || !verifyWebhookSignature(rawBody, signatureHeader, APP_SECRET)) {
       res.statusCode = 401;
       res.end('Unauthorized');
       return;
@@ -76,12 +76,31 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
+    // Global limiter (drop batch if exceeded)
+    if (!globalLimiter.allowEvent('global')) {
+      logger.warn('Global rate limit exceeded (serverless)');
+      res.statusCode = 429;
+      res.end('Too Many Requests');
+      return;
+    }
+
     const events = extractMessagingEvents(body);
     const tasks: Promise<void>[] = [];
 
     // Process each messaging event
     for (const event of events) {
       const { senderId, messageText, mid, imageUrl, hasImage } = event;
+
+      // Replay protection
+      if (mid && replayCache.seen(mid)) {
+        logger.debug({ mid }, 'Replay detected: duplicate message id');
+        continue;
+      }
+      const entryTime = (body.entry && body.entry[0] && body.entry[0].time) ? Number(body.entry[0].time) : undefined;
+      if (entryTime && (Date.now() - entryTime) > MAX_EVENT_AGE_MS) {
+        logger.warn({ senderId }, 'Stale event rejected due to age check');
+        continue;
+      }
 
       // Apply rate limiting
       if (!rateLimiter.allowEvent(senderId)) {
@@ -93,7 +112,11 @@ export default async function handler(req: any, res: any) {
       
       tasks.push((async () => {
         try {
-          await sendSenderAction(PAGE_ACCESS_TOKEN, senderId, 'typing_on');
+          // Lazy-import heavy modules to keep GET lightweight and avoid env parsing side-effects
+          const { handleConversation } = await import('../src/conversation');
+          const { sendSenderAction, sendTextMessage, sendProductCarousel } = await import('../src/social/facebook');
+
+          await sendSenderAction(PAGE_ACCESS_TOKEN!, senderId, 'typing_on');
           
           // Prepare conversation options (with image if present)
           const conversationOpts = {
@@ -104,10 +127,10 @@ export default async function handler(req: any, res: any) {
           const resp = await handleConversation(senderId, clipped, conversationOpts);
           
           if (resp.products && resp.products.length > 0) {
-            await sendProductCarousel(PAGE_ACCESS_TOKEN, senderId, resp.products);
+            await sendProductCarousel(PAGE_ACCESS_TOKEN!, senderId, resp.products);
           }
           
-          await sendTextMessage(PAGE_ACCESS_TOKEN, senderId, resp.text);
+          await sendTextMessage(PAGE_ACCESS_TOKEN!, senderId, resp.text);
         } catch (err: any) {
           logger.error({ err, senderId }, 'Failed to handle message event');
         }

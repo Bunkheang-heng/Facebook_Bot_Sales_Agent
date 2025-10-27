@@ -1,8 +1,10 @@
+import { Language } from "../types/domain";
+
 /**
  * Language detection and bilingual support utilities
  */
 
-export type Language = 'km' | 'en'; // km = Khmer, en = English
+
 
 /**
  * Detect language from user message

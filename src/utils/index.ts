@@ -35,6 +35,8 @@ export {
 export {
   detectLanguage,
   getPreferredLanguage,
-  type Language
 } from './language';
+
+export { conversationStageSchema, leadUpdateSchema, userMessageSchema, maskEmail, maskPhone, buildLeadUpdate } from './validators';
+export { ReplayCache } from './replay-cache';
 

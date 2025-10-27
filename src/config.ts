@@ -5,9 +5,6 @@ const Env = z.object({
   PAGE_ACCESS_TOKEN: z.string().min(1),
   VERIFY_TOKEN: z.string().min(1),
   APP_SECRET: z.string().min(1),
-  FIREBASE_PROJECT_ID: z.string().min(1),
-  FIREBASE_CLIENT_EMAIL: z.string().email(),
-  FIREBASE_PRIVATE_KEY: z.string().min(40),
   // Supabase (server-side)
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(10),

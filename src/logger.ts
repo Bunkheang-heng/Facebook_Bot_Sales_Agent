@@ -5,7 +5,16 @@ const isDevelopment = process.env.NODE_ENV !== 'production';
 const baseOptions = {
   level: process.env.LOG_LEVEL || 'info',
   redact: {
-    paths: ['req.headers.authorization', 'headers.authorization', 'OPENAI_API_KEY', 'PAGE_ACCESS_TOKEN'],
+    paths: [
+      'req.headers.authorization',
+      'headers.authorization',
+      'OPENAI_API_KEY',
+      'PAGE_ACCESS_TOKEN',
+      // PII fields
+      '*.phone',
+      '*.email',
+      '*.address'
+    ],
     remove: true
   }
 };
