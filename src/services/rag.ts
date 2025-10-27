@@ -336,6 +336,109 @@ export async function retrieveSimilarContextByImage(
   return products;
 }
 
+/**
+ * Combined RAG: Search using both text query AND image
+ * Merges results, prioritizing image matches for visual queries
+ * @param queryText User's text query
+ * @param imageBase64 Base64 encoded image
+ * @param opts Optional match count and similarity threshold
+ * @returns Merged and ranked products from both text and image search
+ */
+export async function retrieveSimilarContextCombined(
+  queryText: string,
+  imageBase64: string,
+  opts?: { matchCount?: number; minSimilarity?: number }
+): Promise<RetrievedProduct[]> {
+  const matchCount = Math.max(1, opts?.matchCount ?? 10);
+  
+  logger.info(
+    { 
+      query: queryText.slice(0, 100),
+      hasImage: true,
+      requestedCount: matchCount
+    },
+    '🔄 RAG: Combined text + image search'
+  );
+
+  // Run both searches in parallel
+  const [textProducts, imageProducts] = await Promise.allSettled([
+    retrieveSimilarContext(queryText, { matchCount: 10, minSimilarity: 0 }),
+    retrieveSimilarContextByImage(imageBase64, { matchCount: 5, minSimilarity: 0 })
+  ]);
+
+  const textResults = textProducts.status === 'fulfilled' ? textProducts.value : [];
+  const imageResults = imageProducts.status === 'fulfilled' ? imageProducts.value : [];
+
+  logger.info(
+    { 
+      textResults: textResults.length,
+      imageResults: imageResults.length
+    },
+    '📊 RAG: Both searches completed'
+  );
+
+  // If image search failed, return text results
+  if (imageResults.length === 0) {
+    logger.info('RAG: Image search returned no results, using text-only');
+    return textResults.slice(0, matchCount);
+  }
+
+  // If text search failed, return image results
+  if (textResults.length === 0) {
+    logger.info('RAG: Text search returned no results, using image-only');
+    return imageResults.slice(0, matchCount);
+  }
+
+  // Merge strategy: Image results get 2x weight boost (visual similarity is more relevant)
+  const merged = new Map<string, RetrievedProduct>();
+
+  // Add text results
+  for (const product of textResults) {
+    merged.set(product.id, {
+      ...product,
+      similarity: product.similarity * 0.5 // Lower weight for text matches
+    });
+  }
+
+  // Add/boost image results (2x weight)
+  for (const product of imageResults) {
+    const existing = merged.get(product.id);
+    if (existing) {
+      // Product found in both searches - boost similarity
+      merged.set(product.id, {
+        ...product,
+        similarity: existing.similarity + (product.similarity * 2.0) // Image gets 2x boost
+      });
+    } else {
+      // Product only found in image search
+      merged.set(product.id, {
+        ...product,
+        similarity: product.similarity * 2.0 // Image gets 2x boost
+      });
+    }
+  }
+
+  // Sort by combined similarity and take top N
+  const finalProducts = Array.from(merged.values())
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, matchCount);
+
+  logger.info(
+    {
+      mergedCount: merged.size,
+      finalCount: finalProducts.length,
+      topResults: finalProducts.slice(0, 3).map((r) => ({ 
+        id: r.id, 
+        name: r.name, 
+        combinedSimilarity: r.similarity.toFixed(3)
+      }))
+    },
+    '✅ RAG: Combined results merged and ranked'
+  );
+
+  return finalProducts;
+}
+
 export function buildRagContext(products: RetrievedProduct[], maxChars = 2000): string {
   if (!products.length) return '';
   const header = 'Retrieved products (semantic + keyword matches):\n';

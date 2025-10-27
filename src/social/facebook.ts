@@ -10,7 +10,7 @@ const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
 
 const graph = axios.create({
   baseURL: 'https://graph.facebook.com/v18.0',
-  timeout: 10000,
+  timeout: 30000, // Increased to 30s for slower networks
   httpAgent,
   httpsAgent
 });
@@ -23,16 +23,43 @@ function buildParams(pageAccessToken: string) {
   return { access_token: pageAccessToken, ...(appsecret_proof ? { appsecret_proof } : {}) } as const;
 }
 
+/**
+ * Retry helper for transient network errors
+ */
+async function retryOnTimeout<T>(fn: () => Promise<T>, retries = 2, delayMs = 1000): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
+      const is5xx = err.response?.status >= 500 && err.response?.status < 600;
+      const shouldRetry = (isTimeout || is5xx) && attempt < retries;
+      
+      if (shouldRetry) {
+        logger.warn({ attempt: attempt + 1, err: err.message }, 'Retrying Graph API call');
+        await new Promise(resolve => setTimeout(resolve, delayMs * (attempt + 1)));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Retry exhausted');
+}
+
 export async function sendSenderAction(pageAccessToken: string, recipientPsid: string, action: 'typing_on' | 'typing_off' | 'mark_seen'): Promise<void> {
-  await graph.post('/me/messages', { recipient: { id: recipientPsid }, sender_action: action }, { params: buildParams(pageAccessToken) });
+  await retryOnTimeout(() => 
+    graph.post('/me/messages', { recipient: { id: recipientPsid }, sender_action: action }, { params: buildParams(pageAccessToken) })
+  );
 }
 
 export async function sendTextMessage(pageAccessToken: string, recipientPsid: string, text: string): Promise<void> {
-  await graph.post('/me/messages', {
-    recipient: { id: recipientPsid },
-    messaging_type: 'RESPONSE',
-    message: { text }
-  }, { params: buildParams(pageAccessToken) });
+  await retryOnTimeout(() => 
+    graph.post('/me/messages', {
+      recipient: { id: recipientPsid },
+      messaging_type: 'RESPONSE',
+      message: { text }
+    }, { params: buildParams(pageAccessToken) })
+  );
 }
 
 export async function sendProductCarousel(pageAccessToken: string, recipientPsid: string, products: RetrievedProduct[]): Promise<void> {
@@ -92,8 +119,9 @@ export async function sendProductCarousel(pageAccessToken: string, recipientPsid
 
   console.log('payload', payload);
 
-
-  await graph.post('/me/messages', payload, { params: buildParams(pageAccessToken) });
+  await retryOnTimeout(() => 
+    graph.post('/me/messages', payload, { params: buildParams(pageAccessToken) })
+  );
   logger.info({ recipientPsid, cardCount: elements.length }, 'Messenger: Carousel sent');
 }
 

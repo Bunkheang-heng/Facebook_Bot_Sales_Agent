@@ -1,6 +1,7 @@
 import { logger } from '../src/logger';
 import { RateLimiter } from '../src/utils/rate-limiter';
 import { ReplayCache } from '../src/utils/replay-cache';
+import { EventBuffer } from '../src/utils/event-buffer';
 import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from '../src/utils/webhook';
 import { clampText } from '../src/utils/text';
 import { MAX_MESSAGE_CHARS, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS, GLOBAL_RATE_LIMIT_MAX, REPLAY_TTL_MS, MAX_EVENT_AGE_MS } from '../src/security/constants';
@@ -9,6 +10,8 @@ import { MAX_MESSAGE_CHARS, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS, GLOBAL_
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS);
 const globalLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX);
 const replayCache = new ReplayCache(REPLAY_TTL_MS);
+// Event buffer to merge related text + image events
+const eventBuffer = new EventBuffer(2000); // Wait 2s to collect related events
 
 async function readRawBody(req: any): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
@@ -89,13 +92,14 @@ export default async function handler(req: any, res: any) {
 
     // Process each messaging event
     for (const event of events) {
-      const { senderId, messageText, mid, imageUrl, hasImage } = event;
+      const { senderId, messageText, mid, imageUrl } = event;
 
-      // Replay protection
+      // Replay protection by message ID
       if (mid && replayCache.seen(mid)) {
         logger.debug({ mid }, 'Replay detected: duplicate message id');
         continue;
       }
+
       const entryTime = (body.entry && body.entry[0] && body.entry[0].time) ? Number(body.entry[0].time) : undefined;
       if (entryTime && (Date.now() - entryTime) > MAX_EVENT_AGE_MS) {
         logger.warn({ senderId }, 'Stale event rejected due to age check');
@@ -110,34 +114,38 @@ export default async function handler(req: any, res: any) {
 
       const clipped = clampText(messageText, MAX_MESSAGE_CHARS);
       
-      tasks.push((async () => {
-        try {
-          // Lazy-import heavy modules to keep GET lightweight and avoid env parsing side-effects
-          const { handleConversation } = await import('../src/conversation');
-          const { sendSenderAction, sendTextMessage, sendProductCarousel } = await import('../src/social/facebook');
+      // Buffer events to merge text + image from same user
+      eventBuffer.addEvent(senderId, clipped, imageUrl, mid, (mergedEvent) => {
+        tasks.push((async () => {
+          try {
+            // Lazy-import heavy modules to keep GET lightweight and avoid env parsing side-effects
+            const { handleConversation } = await import('../src/conversation');
+            const { sendSenderAction, sendTextMessage, sendProductCarousel } = await import('../src/social/facebook');
 
-          await sendSenderAction(PAGE_ACCESS_TOKEN!, senderId, 'typing_on');
-          
-          // Prepare conversation options (with image if present)
-          const conversationOpts = {
-            mid,
-            ...(hasImage && imageUrl ? { imageUrl } : {})
-          };
-          
-          const resp = await handleConversation(senderId, clipped, conversationOpts);
-          
-          if (resp.products && resp.products.length > 0) {
-            await sendProductCarousel(PAGE_ACCESS_TOKEN!, senderId, resp.products);
+            await sendSenderAction(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, 'typing_on');
+            
+            // Prepare conversation options (with merged text + image)
+            const conversationOpts = {
+              mid: mergedEvent.mid,
+              ...(mergedEvent.imageUrl ? { imageUrl: mergedEvent.imageUrl } : {})
+            };
+            
+            const resp = await handleConversation(mergedEvent.senderId, mergedEvent.messageText, conversationOpts);
+            
+            if (resp.products && resp.products.length > 0) {
+              await sendProductCarousel(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, resp.products);
+            }
+            
+            await sendTextMessage(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, resp.text);
+          } catch (err: any) {
+            logger.error({ err, senderId: mergedEvent.senderId }, 'Failed to handle message event');
           }
-          
-          await sendTextMessage(PAGE_ACCESS_TOKEN!, senderId, resp.text);
-        } catch (err: any) {
-          logger.error({ err, senderId }, 'Failed to handle message event');
-        }
-      })());
+        })());
+      });
     }
 
-    void Promise.allSettled(tasks);
+    // IMPORTANT: Must await in serverless - execution stops after response
+    await Promise.allSettled(tasks);
     res.statusCode = 200;
     res.end('OK');
     return;

@@ -14,6 +14,7 @@ import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents 
 import { clampText } from './utils/text';
 import { ReplayCache } from './utils/replay-cache';
 import { MAX_MESSAGE_CHARS, RATE_LIMIT_MAX_EVENTS, RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX, REPLAY_TTL_MS, MAX_EVENT_AGE_MS } from './security/constants';
+import { EventBuffer } from './utils/event-buffer';
 
 const app = express();
 
@@ -43,6 +44,8 @@ const PORT = env.PORT;
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS);
 const globalLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX);
 const replayCache = new ReplayCache(REPLAY_TTL_MS);
+// Event buffer to merge related text + image events
+const eventBuffer = new EventBuffer(2000); // Wait 2s to collect related events
 
 if (!PAGE_ACCESS_TOKEN || !VERIFY_TOKEN || !APP_SECRET) {
   // Fail fast so misconfiguration is caught immediately
@@ -89,7 +92,7 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
   for (const event of events) {
     const { senderId, messageText, mid, imageUrl, hasImage } = event;
 
-    // Replay protection by message id
+    // Replay protection by message ID
     if (mid && replayCache.seen(mid)) {
       logger.debug({ mid }, 'Replay detected: duplicate message id');
       continue;
@@ -110,30 +113,33 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
 
     const clipped = clampText(messageText, MAX_MESSAGE_CHARS);
     
-    // Send typing indicator (non-blocking)
-    sendSenderAction(PAGE_ACCESS_TOKEN!, senderId, 'typing_on')
-      .catch((err) => logger.debug({ err }, 'Failed to send typing indicator'));
+    // Buffer events to merge text + image from same user
+    eventBuffer.addEvent(senderId, clipped, imageUrl, mid, (mergedEvent) => {
+      // Send typing indicator (non-blocking)
+      sendSenderAction(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, 'typing_on')
+        .catch((err) => logger.debug({ err }, 'Failed to send typing indicator'));
 
-    // Handle conversation asynchronously (with image if present)
-    const conversationOpts = {
-      mid,
-      ...(hasImage && imageUrl ? { imageUrl } : {})
-    };
-    
-    handleConversation(senderId, clipped, conversationOpts)
-      .then(async (resp) => {
-        try {
-          if (resp.products && resp.products.length > 0) {
-            await sendProductCarousel(PAGE_ACCESS_TOKEN!, senderId, resp.products);
+      // Handle conversation with merged text + image
+      const conversationOpts = {
+        mid: mergedEvent.mid,
+        ...(mergedEvent.imageUrl ? { imageUrl: mergedEvent.imageUrl } : {})
+      };
+      
+      handleConversation(mergedEvent.senderId, mergedEvent.messageText, conversationOpts)
+        .then(async (resp) => {
+          try {
+            if (resp.products && resp.products.length > 0) {
+              await sendProductCarousel(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, resp.products);
+            }
+          } catch (err) {
+            logger.error({ err, senderId: mergedEvent.senderId }, 'Failed to send product carousel');
           }
-        } catch (err) {
-          logger.error({ err, senderId }, 'Failed to send product carousel');
-        }
-        return sendTextMessage(PAGE_ACCESS_TOKEN!, senderId, resp.text);
-      })
-      .catch((err) => {
-        logger.error({ err, senderId }, 'Failed to generate/send AI reply');
-      });
+          return sendTextMessage(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, resp.text);
+        })
+        .catch((err) => {
+          logger.error({ err, senderId: mergedEvent.senderId }, 'Failed to generate/send AI reply');
+        });
+    });
   }
 
   res.sendStatus(200);

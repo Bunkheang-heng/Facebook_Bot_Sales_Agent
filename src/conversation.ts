@@ -4,7 +4,7 @@ import { saveAssistantMessage, saveUserMessage } from './services/history-supaba
 import { detectLanguage } from './utils';
 import { generateAiReplyWithHistory, refreshThreadSummary } from './ai';
 import { normalizePhone } from './services/phone';
-import { retrieveSimilarContext, retrieveSimilarContextByImage, type RetrievedProduct } from './services/rag';
+import { retrieveSimilarContext, retrieveSimilarContextByImage, retrieveSimilarContextCombined, type RetrievedProduct } from './services/rag';
 import { logger } from './logger';
 import { getProductsForCarousel, shouldShowCarousel } from './utils/ai-product-matcher';
 import { downloadImageAsBase64, isValidImageUrl } from './utils/image';
@@ -209,76 +209,81 @@ export async function handleConversation(
   // SKIP RAG if user is just confirming - they already saw products
   const shouldDoRAG = !isLikelyConfirming && (isProductQuery || hasImage);
   
-  // Image-based search: prioritize visual similarity
-  if (shouldDoRAG && hasImage) {
+  // RAG search strategy
+  if (shouldDoRAG) {
     try {
-      const hasQuestion = msg.length > 0;
-      logger.info(
-        { 
-          userId, 
-          imageUrl: opts.imageUrl?.slice(0, 100),
-          hasQuestion,
-          question: hasQuestion ? msg.slice(0, 100) : undefined
-        }, 
-        hasQuestion 
-          ? '🖼️+💬 RAG: Image search WITH user question' 
-          : '🖼️ RAG: Image-only search'
-      );
+      const hasQuestion = msg.length > 0 && isProductQuery;
       
-      // Download and convert image to base64
-      const imageBase64 = await downloadImageAsBase64(opts.imageUrl!, env.PAGE_ACCESS_TOKEN);
-      
-      // Search by image - image search is very specific, so limit to top 5 matches
-      allProducts = await retrieveSimilarContextByImage(imageBase64, { matchCount: 5, minSimilarity: 0 });
-      
-      if (allProducts && allProducts.length > 0) {
+      // STRATEGY 1: Image + Text (Combined RAG)
+      if (hasImage && hasQuestion) {
         logger.info(
-          {
-            userId,
-            retrieved: allProducts.length,
-            topMatch: allProducts[0]?.name,
-            topSimilarity: allProducts[0]?.similarity,
-            userQuestion: hasQuestion ? msg.slice(0, 50) : 'none'
-          },
-          hasQuestion
-            ? 'RAG: Products found by image + user can ask specific questions'
-            : 'RAG: Products retrieved by image'
+          { 
+            userId, 
+            imageUrl: opts.imageUrl?.slice(0, 100),
+            query: msg.slice(0, 100)
+          }, 
+          '🔄 RAG: Combined image + text search'
         );
-      } else {
-        logger.info({ userId }, 'RAG: No products found for image');
+        
+        const imageBase64 = await downloadImageAsBase64(opts.imageUrl!, env.PAGE_ACCESS_TOKEN);
+        allProducts = await retrieveSimilarContextCombined(msg, imageBase64, { matchCount: 10, minSimilarity: 0 });
+        
+        if (allProducts && allProducts.length > 0) {
+          logger.info(
+            {
+              userId,
+              retrieved: allProducts.length,
+              topMatch: allProducts[0]?.name,
+              topSimilarity: allProducts[0]?.similarity
+            },
+            '✅ RAG: Combined search returned products'
+          );
+        }
+      }
+      // STRATEGY 2: Image-only (no text query)
+      else if (hasImage) {
+        logger.info(
+          { 
+            userId, 
+            imageUrl: opts.imageUrl?.slice(0, 100)
+          }, 
+          '🖼️ RAG: Image-only search'
+        );
+        
+        const imageBase64 = await downloadImageAsBase64(opts.imageUrl!, env.PAGE_ACCESS_TOKEN);
+        allProducts = await retrieveSimilarContextByImage(imageBase64, { matchCount: 5, minSimilarity: 0 });
+        
+        if (allProducts && allProducts.length > 0) {
+          logger.info(
+            {
+              userId,
+              retrieved: allProducts.length,
+              topMatch: allProducts[0]?.name,
+              topSimilarity: allProducts[0]?.similarity
+            },
+            'RAG: Products retrieved by image'
+          );
+        }
+      }
+      // STRATEGY 3: Text-only (no image)
+      else if (hasQuestion) {
+        logger.info({ userId, query: msg }, '💬 RAG: Text-only product search');
+        allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
+        
+        if (allProducts && allProducts.length > 0) {
+          logger.info(
+            {
+              userId,
+              retrieved: allProducts.length,
+              topMatch: allProducts[0]?.name,
+              topSimilarity: allProducts[0]?.similarity
+            },
+            'RAG: Products retrieved by text'
+          );
+        }
       }
     } catch (err: any) {
-      logger.error({ userId, error: err.message }, 'RAG: Image-based retrieval failed');
-      // Fallback to text-based search if available
-      if (isProductQuery && msg.length > 0) {
-        logger.info({ userId }, 'Falling back to text-based search');
-        try {
-          // Let RAG service decide count dynamically based on query type
-          allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
-        } catch {}
-      }
-    }
-  } 
-  // Text-based search: use query text
-  else if (shouldDoRAG && isProductQuery && msg.length > 0) {
-    try {
-      logger.info({ userId, query: msg }, 'RAG: Text-based product search');
-      // Let RAG service decide count dynamically (10 for "show/recommend", 5 for specific)
-      allProducts = await retrieveSimilarContext(msg, { minSimilarity: 0 });
-      
-      if (allProducts && allProducts.length > 0) {
-        logger.info(
-          {
-            userId,
-            retrieved: allProducts.length,
-            topMatch: allProducts[0]?.name,
-            topSimilarity: allProducts[0]?.similarity
-          },
-          'RAG: Products retrieved by text'
-        );
-      }
-    } catch (err: any) {
-      logger.error({ userId, error: err.message }, 'RAG: Text-based retrieval failed');
+      logger.error({ userId, error: err.message }, 'RAG: Product search failed');
     }
   }
   

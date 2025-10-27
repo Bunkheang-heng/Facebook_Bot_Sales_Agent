@@ -61,7 +61,7 @@ export function getProductsForCarousel(
   aiResponse: string,
   allProducts: RetrievedProduct[],
   maxDisplay: number = 2,
-  minSimilarity: number = 0.3
+  minSimilarity: number = 0.5
 ): RetrievedProduct[] {
   if (!allProducts || allProducts.length === 0) {
     return [];
@@ -122,20 +122,23 @@ export function getProductsForCarousel(
 export function shouldShowCarousel(
   aiResponse: string,
   products: RetrievedProduct[],
-  minSimilarity: number = 0.3
 ): boolean {
   if (!products || products.length === 0) {
     return false;
   }
 
-  // If AI mentions specific products, always show them
-  const mentioned = extractMentionedProducts(aiResponse, products);
-  if (mentioned.length > 0 && mentioned[0] && mentioned[0].similarity >= minSimilarity * 0.7) {
-    return true;
+  // Check if AI response is actually about products (not just a greeting or general chat)
+  const lowerResponse = aiResponse.toLowerCase();
+  const isProductRelated = /\b(product|shirt|shoe|pant|item|price|size|available|stock|buy|purchase|order|recommend|yes.*available)\b/i.test(lowerResponse);
+  
+  if (!isProductRelated) {
+    logger.info('Carousel: Response is not product-related, skipping');
+    return false;
   }
 
-  // Otherwise check if top product is good enough
-  const topSimilarity = products[0]?.similarity ?? 0;
-  return topSimilarity >= minSimilarity;
+
+  // The AI wouldn't mention products unless RAG found something relevant
+  logger.info('Carousel: AI response is product-related, showing products');
+  return true;
 }
 
