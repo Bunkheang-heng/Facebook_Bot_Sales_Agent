@@ -3,7 +3,7 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'crypto';
 import type { RetrievedProduct } from '../services/rag';
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 50 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });

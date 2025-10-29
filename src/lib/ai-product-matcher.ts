@@ -1,5 +1,5 @@
 import type { RetrievedProduct } from '../services/rag';
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 /**
  * Extract product names mentioned in AI response

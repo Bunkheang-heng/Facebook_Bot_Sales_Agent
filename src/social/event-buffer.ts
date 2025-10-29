@@ -1,4 +1,4 @@
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 /**
  * Event buffer to collect related text + image events from the same user

@@ -1,4 +1,4 @@
-import { Language } from './types/domain';
+import { Language } from '../types/domain';
 
 export function getSystemPrompt(language: Language = 'en'): string {
   if (language === 'km') {

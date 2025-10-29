@@ -1,6 +1,6 @@
-import { supabase } from '../supabase';
-import { env } from '../config';
-import { logger } from '../logger';
+import { supabase } from '../core/supabase';
+import { env } from '../core/config';
+import { logger } from '../core/logger';
 
 export type ConversationStage = 
   | 'ask_item' 

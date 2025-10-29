@@ -1,7 +1,7 @@
-import { supabase } from '../supabase';
-import { env } from '../config';
+import { supabase } from '../core/supabase';
+import { env } from '../core/config';
 import { GoogleAuth } from 'google-auth-library';
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 export type RetrievedProduct = {
   id: string;

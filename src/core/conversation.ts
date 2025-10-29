@@ -1,16 +1,16 @@
 import { getPrompts, confirmOrderPrompt, orderConfirmedPrompt } from './prompts';
-import { getOrCreateLead, updateLead } from './services/leads-supabase';
-import { saveAssistantMessage, saveUserMessage } from './services/history-supabase';
-import { detectLanguage } from './utils';
+import { getOrCreateLead, updateLead } from '../services/leads-supabase';
+import { saveAssistantMessage, saveUserMessage } from '../services/history-supabase';
+import { detectLanguage } from '../utils';
 import { generateAiReplyWithHistory, refreshThreadSummary } from './ai';
-import { normalizePhone } from './services/phone';
-import { retrieveSimilarContext, retrieveSimilarContextByImage, retrieveSimilarContextCombined, type RetrievedProduct } from './services/rag';
+import { normalizePhone } from '../services/phone';
+import { retrieveSimilarContext, retrieveSimilarContextByImage, retrieveSimilarContextCombined, type RetrievedProduct } from '../services/rag';
 import { logger } from './logger';
-import { getProductsForCarousel, shouldShowCarousel } from './utils/ai-product-matcher';
-import { downloadImageAsBase64, isValidImageUrl } from './utils/image';
+import { getProductsForCarousel, shouldShowCarousel } from '../lib/ai-product-matcher';
+import { downloadImageAsBase64, isValidImageUrl } from '../social/image';
 import { env } from './config';
-import { findOrCreateCustomer, createOrder } from './services/orders';
-import { leadUpdateSchema, userMessageSchema, maskPhone, buildLeadUpdate } from './utils/validators';
+import { findOrCreateCustomer, createOrder } from '../services/orders';
+import { leadUpdateSchema, userMessageSchema, maskPhone, buildLeadUpdate } from '../security/validators';
 
 export type ConversationResponse = { text: string; products?: RetrievedProduct[] };
 

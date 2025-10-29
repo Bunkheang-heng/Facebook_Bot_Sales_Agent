@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 /**
  * Verify Facebook webhook signature using HMAC SHA256

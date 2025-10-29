@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 /**
  * Download image from URL and convert to base64

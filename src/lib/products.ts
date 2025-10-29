@@ -1,5 +1,5 @@
 import type { RetrievedProduct } from '../services/rag';
-import { logger } from '../logger';
+import { logger } from '../core/logger';
 
 /**
  * Configuration for product filtering and display

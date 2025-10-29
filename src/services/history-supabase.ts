@@ -1,6 +1,6 @@
-import { supabase } from '../supabase';
-import { env } from '../config';
-import { logger } from '../logger';
+import { supabase } from '../core/supabase';
+import { env } from '../core/config';
+import { logger } from '../core/logger';
 import { ChatMessage } from '../types/domain';
 
 export async function saveUserMessage(userId: string, content: string, messageId?: string): Promise<void> {

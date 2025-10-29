@@ -1,8 +1,8 @@
-import { logger } from '../src/logger';
-import { RateLimiter } from '../src/utils/rate-limiter';
-import { ReplayCache } from '../src/utils/replay-cache';
-import { EventBuffer } from '../src/utils/event-buffer';
-import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from '../src/utils/webhook';
+import { logger } from '../src/core/logger';
+import { RateLimiter } from '../src/security/rate-limiter';
+import { ReplayCache } from '../src/security/replay-cache';
+import { EventBuffer } from '../src/social/event-buffer';
+import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from '../src/security/webhook';
 import { clampText } from '../src/utils/text';
 import { MAX_MESSAGE_CHARS, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_EVENTS, GLOBAL_RATE_LIMIT_MAX, REPLAY_TTL_MS, MAX_EVENT_AGE_MS } from '../src/security/constants';
 
@@ -119,7 +119,7 @@ export default async function handler(req: any, res: any) {
         tasks.push((async () => {
           try {
             // Lazy-import heavy modules to keep GET lightweight and avoid env parsing side-effects
-            const { handleConversation } = await import('../src/conversation');
+            const { handleConversation } = await import('../src/core/conversation');
             const { sendSenderAction, sendTextMessage, sendProductCarousel } = await import('../src/social/facebook');
 
             await sendSenderAction(PAGE_ACCESS_TOKEN!, mergedEvent.senderId, 'typing_on');

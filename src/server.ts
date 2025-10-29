@@ -4,17 +4,17 @@ dotenv.config();
 import express, { type Request, type Response } from 'express';
 import path from 'path';
 import { sendSenderAction, sendTextMessage, sendProductCarousel } from './social/facebook';
-import { handleConversation } from './conversation';
+import { handleConversation } from './core/conversation';
 import helmet from 'helmet';
 import compression from 'compression';
-import { env } from './config';
-import { logger } from './logger';
-import { RateLimiter } from './utils/rate-limiter';
-import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from './utils/webhook';
+import { env } from './core/config';
+import { logger } from './core/logger';
+import { RateLimiter } from './security/rate-limiter';
+import { verifyWebhookSignature, verifyWebhookChallenge, extractMessagingEvents } from './security/webhook';
 import { clampText } from './utils/text';
-import { ReplayCache } from './utils/replay-cache';
+import { ReplayCache } from './security/replay-cache';
 import { MAX_MESSAGE_CHARS, RATE_LIMIT_MAX_EVENTS, RATE_LIMIT_WINDOW_MS, GLOBAL_RATE_LIMIT_MAX, REPLAY_TTL_MS, MAX_EVENT_AGE_MS } from './security/constants';
-import { EventBuffer } from './utils/event-buffer';
+import { EventBuffer } from './social/event-buffer';
 
 const app = express();
 
