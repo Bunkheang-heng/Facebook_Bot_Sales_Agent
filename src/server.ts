@@ -75,12 +75,20 @@ app.post('/webhook', (req: Request & { rawBody?: Buffer }, res: Response) => {
     return res.sendStatus(401);
   }
 
-  const body = req.body as any;
-  const events = extractMessagingEvents(body);
+  const body = req.body as { 
+    object: string; entry: 
+    { time: number; messaging: 
+      { sender: 
+        { id: string }; message: 
+        { text: string; mid: string; attachments: 
+          { type: string; payload: 
+            { url: string } }[] } }[] }[] };
 
   if (body.object !== 'page') {
     return res.sendStatus(404);
   }
+
+  const events = extractMessagingEvents(body);
 
   // Basic global limiter
   if (!globalLimiter.allowEvent('global')) {
