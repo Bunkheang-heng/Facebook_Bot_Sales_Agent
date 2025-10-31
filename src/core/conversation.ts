@@ -210,13 +210,14 @@ export async function handleConversation(
           pendingOrder: lead.pendingOrder 
         }, '📦 Starting order creation process');
 
-        // Step 1: Create/find customer
-        logger.info({ userId }, '👤 Creating/finding customer...');
+        // Step 1: Create/find/update customer
+        logger.info({ userId, existingCustomerId: lead.customerId }, '👤 Creating/finding/updating customer...');
         const customer = await findOrCreateCustomer(
           lead.name,
           lead.phone,
           lead.email || undefined,
-          lead.address
+          lead.address,
+          lead.customerId  // Pass existing customer ID to update instead of creating new
         );
         logger.info({ userId, customerId: customer.id }, '✅ Customer ready');
 
@@ -248,14 +249,15 @@ export async function handleConversation(
           '✅✅✅ ORDER SAVED IN DATABASE'
         );
 
-        // Step 4: Update lead state
+        // Step 4: Update lead state (including customer ID for future orders)
         logger.info({ userId, orderId: order.id }, '💾 Updating lead state...');
         await updateLead(userId, {
           stage: 'completed',
           lastOrderId: order.id,
-          pendingOrder: null
+          pendingOrder: null,
+          customerId: customer.id  // Store customer ID so we can update them next time
         });
-        logger.info({ userId }, '✅ Lead updated');
+        logger.info({ userId, customerId: customer.id }, '✅ Lead updated with customer ID');
 
         // Step 5: Send confirmation (using detected language)
         const confirmMsg = orderConfirmedPrompt(order.id, order.total, language);

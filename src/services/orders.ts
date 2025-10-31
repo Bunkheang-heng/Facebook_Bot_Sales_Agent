@@ -7,14 +7,48 @@ import { Customer, Order } from '../types/domain';
 
 /**
  * Find or create customer in Supabase
+ * If existingCustomerId is provided, updates that customer instead of creating new
  */
 export async function findOrCreateCustomer(
   name: string,
   phone: string,
   email?: string,
-  address?: string
+  address?: string,
+  existingCustomerId?: string | null
 ): Promise<Customer> {
   const tenantId = env.PRODUCT_TENANT_ID;
+
+  // If we have an existing customer ID, update that customer
+  if (existingCustomerId) {
+    logger.info({ customerId: existingCustomerId }, '🔄 Updating existing customer');
+    
+    const { data: updated, error: updateError } = await supabase
+      .from('customers')
+      .update({
+        name,
+        phone,
+        email: email || null,
+        address: address || null
+      })
+      .eq('id', existingCustomerId)
+      .eq('tenant_id', tenantId)
+      .select()
+      .single();
+
+    if (updated && !updateError) {
+      logger.info({ customerId: updated.id, phone: maskPhone(phone) }, '✅ Customer updated');
+      return {
+        id: updated.id,
+        name: updated.name,
+        phone: updated.phone,
+        email: updated.email,
+        address: updated.address
+      };
+    }
+    
+    // If update fails, fall through to find/create logic
+    logger.warn({ error: updateError, customerId: existingCustomerId }, 'Failed to update customer, trying find/create');
+  }
 
   // Try to find existing customer by phone
   const { data: existing, error: findError } = await supabase
@@ -25,7 +59,7 @@ export async function findOrCreateCustomer(
     .single();
 
   if (existing && !findError) {
-    logger.info({ customerId: existing.id, phone: maskPhone(phone) }, 'Customer found');
+    logger.info({ customerId: existing.id, phone: maskPhone(phone) }, '✅ Customer found');
     return {
       id: existing.id,
       name: existing.name,
@@ -53,7 +87,7 @@ export async function findOrCreateCustomer(
     throw new Error('Failed to create customer');
   }
 
-  logger.info({ customerId: newCustomer.id, phone: maskPhone(phone) }, 'Customer created');
+  logger.info({ customerId: newCustomer.id, phone: maskPhone(phone) }, '✅ Customer created');
   return {
     id: newCustomer.id,
     name: newCustomer.name,

@@ -42,6 +42,7 @@ export type LeadDoc = {
   } | null;
   lastOrderId?: string | null;
   lastShownProducts?: ProductInfo[] | null;  // NEW: Store products from last product query
+  customerId?: string | null;  // Track the customer record for this lead
 };
 
 /**
@@ -70,7 +71,8 @@ export async function getOrCreateLead(userId: string): Promise<LeadDoc> {
       stage: existing.stage as ConversationStage,
       pendingOrder: existing.pending_order,
       lastOrderId: existing.last_order_id,
-      lastShownProducts: existing.last_shown_products
+      lastShownProducts: existing.last_shown_products,
+      customerId: existing.customer_id
     };
   }
 
@@ -117,6 +119,7 @@ export async function updateLead(userId: string, updates: Partial<LeadDoc>): Pro
   if (updates.pendingOrder !== undefined) dbUpdates.pending_order = updates.pendingOrder;
   if (updates.lastOrderId !== undefined) dbUpdates.last_order_id = updates.lastOrderId;
   if (updates.lastShownProducts !== undefined) dbUpdates.last_shown_products = updates.lastShownProducts;
+  if (updates.customerId !== undefined) dbUpdates.customer_id = updates.customerId;
 
   const { error } = await supabase
     .from('leads')
