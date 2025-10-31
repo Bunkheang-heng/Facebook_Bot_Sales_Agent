@@ -4,6 +4,7 @@ dotenv.config();
 import express, { type Request, type Response } from 'express';
 import path from 'path';
 import { sendSenderAction, sendTextMessage, sendProductCarousel } from './social/facebook';
+import * as telegram from './social/telegram';
 import { handleConversation } from './core/conversation';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -162,6 +163,181 @@ app.get('/healthz', async (_req, res) => {
     res.status(200).json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false });
+  }
+});
+
+// ============================================================================
+// TELEGRAM WEBHOOK
+// ============================================================================
+
+/**
+ * Telegram webhook endpoint
+ * Handles incoming messages from Telegram
+ */
+app.post('/telegram/webhook', async (req: Request, res: Response) => {
+  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+  const TELEGRAM_SECRET_TOKEN = process.env.TELEGRAM_SECRET_TOKEN;
+
+  // Check if Telegram is configured
+  if (!TELEGRAM_BOT_TOKEN) {
+    logger.warn('Telegram bot token not configured');
+    return res.sendStatus(404);
+  }
+
+  // Validate secret token if configured
+  const providedToken = req.header('X-Telegram-Bot-Api-Secret-Token');
+  if (TELEGRAM_SECRET_TOKEN && providedToken !== TELEGRAM_SECRET_TOKEN) {
+    logger.warn('Invalid Telegram secret token');
+    return res.sendStatus(401);
+  }
+
+  try {
+    const update: telegram.TelegramUpdate = req.body;
+
+    // Extract message data
+    const messageData = telegram.extractTelegramMessage(update);
+    
+    if (!messageData) {
+      logger.debug('No message data in Telegram update');
+      return res.sendStatus(200);
+    }
+
+    const { chatId, userId, messageText, messageId, photo, hasPhoto } = messageData;
+
+    // Log incoming message
+    logger.info(
+      { 
+        chatId, 
+        userId, 
+        hasPhoto, 
+        textLength: messageText.length 
+      },
+      '📱 Telegram: Incoming message'
+    );
+
+    // Check rate limiting
+    if (!rateLimiter.allowEvent(String(userId))) {
+      logger.warn({ userId }, 'Telegram: Rate limit exceeded');
+      await telegram.sendTextMessage(
+        TELEGRAM_BOT_TOKEN,
+        chatId,
+        'Please slow down! You\'re sending messages too quickly. ⏱️'
+      );
+      return res.sendStatus(200);
+    }
+
+    // Process message asynchronously (don't block response)
+    (async () => {
+      try {
+        // Send typing indicator
+        await telegram.sendChatAction(TELEGRAM_BOT_TOKEN, chatId, 'typing');
+
+        // Get photo URL if available
+        let imageUrl: string | undefined;
+        if (photo) {
+          const fileUrl = await telegram.getFileUrl(TELEGRAM_BOT_TOKEN, photo);
+          imageUrl = fileUrl ?? undefined;
+        }
+
+        // Handle conversation
+        const conversationOpts = {
+          mid: messageId ? String(messageId) : undefined,
+          imageUrl
+        };
+
+        const response = await handleConversation(
+          String(userId),
+          messageText,
+          conversationOpts
+        );
+
+        // Send response
+        await telegram.sendMessage(
+          TELEGRAM_BOT_TOKEN,
+          chatId,
+          response.text,
+          response.products
+        );
+
+        logger.info({ chatId, userId }, '✅ Telegram: Message processed successfully');
+
+      } catch (error: any) {
+        logger.error(
+          { 
+            error: error.message, 
+            chatId, 
+            userId 
+          },
+          '❌ Telegram: Failed to process message'
+        );
+
+        // Send error message to user
+        await telegram.sendTextMessage(
+          TELEGRAM_BOT_TOKEN,
+          chatId,
+          'Sorry, there was an error processing your message. Please try again. 🔧'
+        ).catch(() => {});
+      }
+    })();
+
+    // Respond immediately to Telegram
+    res.sendStatus(200);
+
+  } catch (error: any) {
+    logger.error(
+      { error: error.message },
+      '❌ Telegram: Webhook error'
+    );
+    res.sendStatus(500);
+  }
+});
+
+/**
+ * Handle Telegram callback queries (button presses)
+ */
+app.post('/telegram/callback', async (req: Request, res: Response) => {
+  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!TELEGRAM_BOT_TOKEN) {
+    return res.sendStatus(404);
+  }
+
+  try {
+    const update: telegram.TelegramUpdate = req.body;
+    const callbackQuery = update.callback_query;
+
+    if (callbackQuery) {
+      const { id, data, from } = callbackQuery;
+
+      logger.info(
+        { 
+          userId: from.id, 
+          data 
+        },
+        '🔘 Telegram: Callback query received'
+      );
+
+      // Answer the callback to remove loading state
+      await telegram.answerCallbackQuery(TELEGRAM_BOT_TOKEN, id, {
+        text: 'Processing your request...'
+      });
+
+      // Handle different callback data
+      if (data?.startsWith('buy_')) {
+        const productId = data.replace('buy_', '');
+        // TODO: Handle product purchase
+        logger.info({ userId: from.id, productId }, 'User wants to buy product');
+      } else if (data?.startsWith('info_')) {
+        const productId = data.replace('info_', '');
+        // TODO: Show more product info
+        logger.info({ userId: from.id, productId }, 'User wants more info');
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (error: any) {
+    logger.error({ error: error.message }, 'Telegram callback error');
+    res.sendStatus(500);
   }
 });
 

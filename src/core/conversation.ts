@@ -11,6 +11,7 @@ import { downloadImageAsBase64, isValidImageUrl } from '../social/image';
 import { env } from './config';
 import { findOrCreateCustomer, createOrder } from '../services/orders';
 import { leadUpdateSchema, userMessageSchema, maskPhone, buildLeadUpdate } from '../security/validators';
+import { formatOrderSummary, formatCustomerInfoReconfirm } from '../formatters/order-summary';
 
 export type ConversationResponse = { text: string; products?: RetrievedProduct[] };
 
@@ -51,6 +52,58 @@ export async function handleConversation(
     // Flow continues to general chat section below
   }
   if (lead.stage === 'ask_name') {
+    // Try to parse if user provided everything in one message (name, phone, address)
+    const parts = msg.split(',').map(p => p.trim()).filter(p => p.length > 0);
+    
+    if (parts.length >= 3) {
+      // User provided all info at once: name, phone, address
+      const name = parts[0]!;
+      const phone = parts[1]!;
+      const addressParts = parts.slice(2);
+      const address = addressParts.join(', ');
+      const norm = normalizePhone(phone, 'KH');
+      const normalizedPhone = norm.e164 ?? phone;
+      
+      logger.info({ userId, name, phone: maskPhone(normalizedPhone) }, '📝 User provided all info in one message');
+      
+      // Update with all info and move to show_order_summary if there's a pending order
+      if (lead.pendingOrder && lead.pendingOrder.items && lead.pendingOrder.items.length > 0) {
+        await updateLead(userId, {
+          name: name,
+          phone: normalizedPhone,
+          email: null,
+          address: address,
+          stage: 'show_order_summary'
+        });
+        
+        // Show order summary
+        const summaryMsg = formatOrderSummary(
+          lead.pendingOrder.items,
+          lead.pendingOrder.total,
+          name,
+          normalizedPhone,
+          null,
+          address,
+          language
+        );
+        
+        await saveAssistantMessage(userId, summaryMsg);
+        return { text: summaryMsg };
+      } else {
+        // No pending order, just save info
+        await updateLead(userId, {
+          name: name,
+          phone: normalizedPhone,
+          email: null,
+          address: address,
+          stage: 'completed'
+        });
+        await saveAssistantMessage(userId, prompts.done);
+        return { text: prompts.done };
+      }
+    }
+    
+    // User only provided name, continue with stage-based flow
     const validated = leadUpdateSchema.parse({ name: msg, stage: 'ask_phone' });
     await updateLead(userId, buildLeadUpdate(validated));
     await saveAssistantMessage(userId, prompts.askPhone);
@@ -73,10 +126,67 @@ export async function handleConversation(
     return { text: prompts.askAddress };
   }
   if (lead.stage === 'ask_address') {
-    const validated = leadUpdateSchema.parse({ address: msg, stage: 'completed' });
-    await updateLead(userId, buildLeadUpdate(validated));
-    await saveAssistantMessage(userId, prompts.done);
-    return { text: prompts.done };
+    const validated = leadUpdateSchema.parse({ address: msg });
+    
+    // If there's a pending order, show order summary next
+    if (lead.pendingOrder && lead.pendingOrder.items && lead.pendingOrder.items.length > 0) {
+      await updateLead(userId, { ...buildLeadUpdate(validated), stage: 'show_order_summary' });
+      
+      // Re-fetch lead to get updated info
+      const updatedLead = await getOrCreateLead(userId);
+      
+      const summaryMsg = formatOrderSummary(
+        lead.pendingOrder.items,
+        lead.pendingOrder.total,
+        updatedLead.name!,
+        updatedLead.phone!,
+        updatedLead.email,
+        msg, // The address they just provided
+        language
+      );
+      
+      await saveAssistantMessage(userId, summaryMsg);
+      return { text: summaryMsg };
+    } else {
+      // No pending order, just complete
+      await updateLead(userId, { ...buildLeadUpdate(validated), stage: 'completed' });
+      await saveAssistantMessage(userId, prompts.done);
+      return { text: prompts.done };
+    }
+  }
+  
+  // Handle order summary review
+  if (lead.stage === 'show_order_summary') {
+    const lower = msg.toLowerCase().trim();
+    
+    if (lower === 'yes' || lower === 'confirm' || lower === 'ok') {
+      // User confirmed the order summary, move to final confirmation
+      await updateLead(userId, { stage: 'confirm_order' });
+      
+      const confirmMsg = language === 'km' 
+        ? 'តើអ្នកបញ្ជាក់ការបញ្ជាទិញនេះមែនទេ? ឆ្លើយតប **YES** ដើម្បីបញ្ជាក់។'
+        : 'Do you confirm this order? Reply **YES** to confirm.';
+      
+      await saveAssistantMessage(userId, confirmMsg);
+      return { text: confirmMsg };
+      
+    } else if (lower === 'edit' || lower === 'change' || lower === 'update') {
+      // Allow customer to edit their info
+      logger.info({ userId }, '✏️ Customer wants to edit info');
+      await updateLead(userId, { stage: 'ask_name' });
+      const editMsg = prompts.askName;
+      await saveAssistantMessage(userId, editMsg);
+      return { text: editMsg };
+      
+    } else {
+      // Invalid response, show instructions again
+      const retryMsg = language === 'km'
+        ? 'សូមឆ្លើយតប **YES** ដើម្បីបន្ត ឬ **EDIT** ដើម្បីកែប្រែព័ត៌មាន។'
+        : 'Please reply **YES** to continue or **EDIT** to change information.';
+      
+      await saveAssistantMessage(userId, retryMsg);
+      return { text: retryMsg };
+    }
   }
   
   // Handle order confirmation
@@ -200,7 +310,7 @@ export async function handleConversation(
   const lowerMsg = msg.toLowerCase();
   
   // IMPORTANT: Check if user is confirming an order (don't do RAG search for confirmations)
-  const confirmKeywords = ['i\'ll take', 'i will take', 'i want this', 'i want that', 'buy this', 'buy that', 'yes', 'confirm'];
+  const confirmKeywords = ['i\'ll take', 'i will take', 'i want this', 'i want that', 'buy this', 'buy that', 'i take', 'yes', 'confirm'];
   const isLikelyConfirming = confirmKeywords.some(keyword => lowerMsg.includes(keyword)) && lowerMsg.length < 100;
   
   const isProductQuery = /\b(product|shoe|sneaker|item|what.*have|show|looking for|buy|purchase|available|pant|shirt|jacket|dress|wear|similar|like this)\b/i.test(lowerMsg);
@@ -208,6 +318,68 @@ export async function handleConversation(
   
   // SKIP RAG if user is just confirming - they already saw products
   const shouldDoRAG = !isLikelyConfirming && (isProductQuery || hasImage);
+  
+  // IMPORTANT: Check if user is confirming order BEFORE doing RAG/AI
+  // This prevents AI from generating responses when user is just saying "yes I'll take it"
+  const isLikelyConfirmingEarly = isLikelyConfirming;
+  
+  // Check if we have products from previous interaction
+  const hasProductsToConfirm = lead.lastShownProducts && lead.lastShownProducts.length > 0;
+  
+  // If user is confirming and has products, handle order immediately
+  if (isLikelyConfirmingEarly && hasProductsToConfirm) {
+    const orderItems = lead.lastShownProducts!.slice(0, 1).map(product => ({
+      productId: product.id,
+      productName: product.name,
+      quantity: 1,
+      price: product.price || 0
+    }));
+
+    const total = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+    logger.info(
+      { 
+        userId, 
+        selectedProduct: orderItems[0]?.productName,
+        price: orderItems[0]?.price,
+        total 
+      }, 
+      '🛒 User confirming order for previously shown product'
+    );
+
+    // Save pending order
+    await updateLead(userId, {
+      pendingOrder: { items: orderItems, total }
+    });
+
+    // Check if customer already has contact information
+    const hasCompleteInfo = lead.name && lead.phone && lead.address;
+    
+    if (hasCompleteInfo) {
+      // Customer exists - show their info and ask if they want to use it
+      logger.info({ userId, customerName: lead.name }, '✅ Found existing customer info');
+      
+      const reconfirmMsg = formatCustomerInfoReconfirm(
+        lead.name!,
+        lead.phone!,
+        lead.email ?? null,
+        lead.address!,
+        language
+      );
+      
+      // Set stage to show_order_summary
+      await updateLead(userId, { stage: 'show_order_summary' });
+      await saveAssistantMessage(userId, reconfirmMsg);
+      return { text: reconfirmMsg };
+      
+    } else {
+      // No contact info - ask for name first
+      logger.info({ userId }, '📝 No customer info, asking for details');
+      await updateLead(userId, { stage: 'ask_name' });
+      await saveAssistantMessage(userId, prompts.askName);
+      return { text: prompts.askName };
+    }
+  }
   
   // RAG search strategy
   if (shouldDoRAG) {
@@ -321,66 +493,8 @@ export async function handleConversation(
   // Use AI's language for order prompts (more reliable than initial detection)
   const orderLanguage = aiLanguage;
   
-  // IMPORTANT: Only create order when user CONFIRMS a specific product, not just says "buy"
-  // Check for explicit confirmation: "I'll take it", "I want this one", "yes I'll buy this"
-  // When confirming, use lastShownProducts instead of doing new RAG search
-  const productsForOrder = allProducts || lead.lastShownProducts?.map(p => ({
-    id: p.id,
-    name: p.name,
-    price: p.price,
-    similarity: p.similarity || 0
-  }));
-  
-  const isConfirmingOrder = isLikelyConfirming && 
-                            productsForOrder && productsForOrder.length > 0 && 
-                            lowerMsg.length < 100; // Short confirmations only
-  
-  // Only create order if:
-  // 1. User is confirming (not just browsing)
-  // 2. Products are available
-  // 3. User info is collected
-  if (isConfirmingOrder && productsForOrder && productsForOrder.length > 0 && lead.name && lead.phone && lead.address) {
-    // IMPORTANT: Only order the TOP 1 product that the user just looked at
-    // User is confirming "this" product from their previous query, not multiple products
-    const orderItems = productsForOrder.slice(0, 1).map(product => ({  // ✅ ONLY TOP 1 PRODUCT
-      productId: product.id,
-      productName: product.name,
-      quantity: 1, // Default quantity, could be extracted from message
-      price: product.price || 0
-    }));
-
-    const total = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-
-    logger.info(
-      { 
-        userId, 
-        selectedProduct: orderItems[0]?.productName,
-        price: orderItems[0]?.price,
-        total 
-      }, 
-      '🛒 Creating pending order for TOP product match'
-    );
-
-    // Save pending order
-    await updateLead(userId, {
-      stage: 'confirm_order',
-      pendingOrder: { items: orderItems, total }
-    });
-
-    const confirmMsg = confirmOrderPrompt(
-      orderItems.map(item => ({
-        name: item.productName,
-        qty: item.quantity,
-        price: item.price
-      })),
-      total,
-      orderLanguage
-    );
-
-    logger.info({ userId, orderItems, total }, '🛒 Pending order created, awaiting confirmation');
-    await saveAssistantMessage(userId, confirmMsg);
-    return { text: confirmMsg };
-  }
+  // Note: Order confirmation is now handled earlier in the flow (before AI generation)
+  // to prevent AI from generating its own order confirmation messages
   
   // IMPORTANT: Determine how many products to show based on query type
   if (allProducts && allProducts.length > 0) {

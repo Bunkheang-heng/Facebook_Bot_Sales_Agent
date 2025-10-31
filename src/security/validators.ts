@@ -7,6 +7,7 @@ export const conversationStageSchema = z.enum([
   'ask_email',
   'ask_address',
   'completed',
+  'show_order_summary',
   'confirm_order',
   'processing_order'
 ]);
@@ -16,7 +17,7 @@ export const userMessageSchema = z.string().trim().max(800);
 export const leadUpdateSchema = z.object({
   item: z.string().trim().max(200).optional().nullable(),
   name: z.string().trim().max(120).optional().nullable(),
-  phone: z.string().trim().max(32).optional().nullable(),
+  phone: z.string().trim().max(50).optional().nullable(), // Increased to 50 for international formats
   email: z.string().trim().email().max(254).optional().nullable(),
   address: z.string().trim().max(300).optional().nullable(),
   stage: conversationStageSchema.optional(),
@@ -45,8 +46,8 @@ export function buildLeadUpdate(input: {
   phone?: string | null | undefined;
   email?: string | null | undefined;
   address?: string | null | undefined;
-  stage?: 'ask_item' | 'ask_name' | 'ask_phone' | 'ask_email' | 'ask_address' | 'completed' | 'confirm_order' | 'processing_order' | undefined;
-}): Partial<{ item: string | null; name: string | null; phone: string | null; email: string | null; address: string | null; stage: 'ask_item' | 'ask_name' | 'ask_phone' | 'ask_email' | 'ask_address' | 'completed' | 'confirm_order' | 'processing_order' }>
+  stage?: 'ask_item' | 'ask_name' | 'ask_phone' | 'ask_email' | 'ask_address' | 'completed' | 'show_order_summary' | 'confirm_order' | 'processing_order' | undefined;
+}): Partial<{ item: string | null; name: string | null; phone: string | null; email: string | null; address: string | null; stage: 'ask_item' | 'ask_name' | 'ask_phone' | 'ask_email' | 'ask_address' | 'completed' | 'show_order_summary' | 'confirm_order' | 'processing_order' }>
 {
   const out: any = {};
   if (input.item !== undefined) out.item = input.item;

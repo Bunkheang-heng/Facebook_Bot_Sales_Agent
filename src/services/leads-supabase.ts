@@ -9,6 +9,7 @@ export type ConversationStage =
   | 'ask_email'
   | 'ask_address' 
   | 'completed'
+  | 'show_order_summary'
   | 'confirm_order'
   | 'processing_order';
 

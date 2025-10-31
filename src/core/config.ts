@@ -2,9 +2,13 @@ import { z } from 'zod';
 
 const Env = z.object({
   OPENAI_API_KEY: z.string().min(1),
+  // Facebook Messenger
   PAGE_ACCESS_TOKEN: z.string().min(1),
   VERIFY_TOKEN: z.string().min(1),
   APP_SECRET: z.string().min(1),
+  // Telegram Bot (optional)
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_SECRET_TOKEN: z.string().optional(),
   // Supabase (server-side)
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(10),
